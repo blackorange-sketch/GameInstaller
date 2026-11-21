@@ -5,16 +5,28 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-        with: { submodules: recursive }
       - uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: 17 }
-      # Android SDK вже є на образі runner'а (ANDROID_HOME), окрема дія не потрібна.
-      - name: Install SDK packages
+      - name: SDK packages
         run: |
           SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
           [ -x "$SDKM" ] || SDKM="$(command -v sdkmanager)"
           yes | "$SDKM" --licenses > /dev/null || true
-          "$SDKM" "platforms;android-34" "build-tools;34.0.0" "ndk;26.1.10909125" "cmake;3.22.1"
+          "$SDKM" "platforms;android-34" "build-tools;34.0.0"
+      - name: Build unarc (arm64, NDK) into jniLibs
+        run: |
+          NDK="${ANDROID_NDK_HOME:-}"
+          if [ ! -d "$NDK" ]; then
+            SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"; [ -x "$SDKM" ] || SDKM="$(command -v sdkmanager)"
+            "$SDKM" "ndk;26.1.10909125"; NDK="$ANDROID_HOME/ndk/26.1.10909125"
+          fi
+          TC="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          cd third_party/unarc
+          make -f Makefile.android CXX="$TC/aarch64-linux-android26-clang++" \
+               UNIX_LINK_FLAGS="-static-libstdc++ -lpthread -s" -j4
+          file unarc
+          mkdir -p ../../app/src/main/jniLibs/arm64-v8a
+          cp unarc ../../app/src/main/jniLibs/arm64-v8a/libunarc.so
       - uses: gradle/actions/setup-gradle@v4
         with: { gradle-version: "8.7" }
       - run: gradle :app:assembleDebug --no-daemon
