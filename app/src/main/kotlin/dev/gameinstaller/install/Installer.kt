@@ -57,12 +57,12 @@ class Installer(private val ctx: Context) {
         val p = pb.start()
         procs.add(p)
         val last = java.util.concurrent.atomic.AtomicLong(System.currentTimeMillis())
-        @Volatile var timedOut = false
+        val timedOut = java.util.concurrent.atomic.AtomicBoolean(false)
         val wd = if (idleSec > 0) kotlin.concurrent.thread(isDaemon = true, name = "unarc-watchdog") {
             try {
                 while (true) {
                     Thread.sleep(5000)
-                    if (System.currentTimeMillis() - last.get() > idleSec * 1000L) { timedOut = true; p.destroyForcibly(); break }
+                    if (System.currentTimeMillis() - last.get() > idleSec * 1000L) { timedOut.set(true); p.destroyForcibly(); break }
                 }
             } catch (_: InterruptedException) { }
         } else null
@@ -76,7 +76,7 @@ class Installer(private val ctx: Context) {
         val code = p.waitFor()
         wd?.interrupt()
         procs.remove(p)
-        return if (timedOut) -2 else code
+        return if (timedOut.get()) -2 else code
     }
 
     /**
