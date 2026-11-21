@@ -35,6 +35,13 @@ class Installer(private val ctx: Context) {
     /** Тимчасові файли зовнішніх розпакувальників (srep) — поруч із грою, а не у внутрішній пам'яті. */
     @Volatile private var tmpDir: File? = null
 
+    /** Видаляє залишки тимчасових папок unarc (freearcNNN), якщо його зупинили примусово. */
+    private fun cleanTemp(extra: File?) {
+        for (d in listOfNotNull(ctx.cacheDir, extra)) {
+            d.listFiles()?.forEach { if (it.isDirectory && it.name.startsWith("freearc")) it.deleteRecursively() }
+        }
+    }
+
     /** arc.ini для unarc: підключає srep (libsrep.so з nativeLibraryDir) як зовнішній розпакувальник. */
     private fun arcIni(): File? {
         val srep = File(ctx.applicationInfo.nativeLibraryDir, "libsrep.so")
@@ -93,6 +100,7 @@ class Installer(private val ctx: Context) {
             val stageDir = File(destDir.parentFile ?: destDir, ".gameinstaller_stage")
             val tmpD = File(destDir.parentFile ?: destDir, ".gameinstaller_tmp").also { it.mkdirs() }
             tmpDir = if (tmpD.isDirectory && tmpD.canWrite()) tmpD else null
+            cleanTemp(tmpD)
 
             /** Повертає справжній файл: з папки як є, з образу копіює в тимчасову папку. */
             fun local(rel: String): File {
@@ -239,6 +247,8 @@ class Installer(private val ctx: Context) {
             InstallState.update(running = false, phase = "Помилка", error = e.message ?: e.toString())
         } finally {
             stage?.deleteRecursively()
+            procs.forEach { it.destroyForcibly() }
+            cleanTemp(tmpDir)
             tmpDir?.deleteRecursively(); tmpDir = null
         }
     }
