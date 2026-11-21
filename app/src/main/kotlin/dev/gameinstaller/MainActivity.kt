@@ -180,13 +180,26 @@ class MainActivity : AppCompatActivity() {
         val isos: List<File> = emptyList(), val inner: String = "",
     )
 
-    private fun isInno(b: ByteArray) = runCatching { InnoHeader.load(b); true }.getOrDefault(false)
+    /** null якщо це інсталятор Inno, інакше причина відмови з підказкою про тип інсталятора. */
+    private fun innoError(b: ByteArray): String? {
+        try { InnoHeader.load(b); return null } catch (e: Throwable) {
+            val l = String(b, Charsets.ISO_8859_1)
+            val kind = when {
+                "Nullsoft" in l -> "схоже на NSIS"
+                "Inno Setup" in l -> "є напис Inno Setup, але розбір не вдався"
+                "InstallShield" in l -> "схоже на InstallShield"
+                "WiX" in l || "Windows Installer" in l -> "схоже на MSI/WiX"
+                "7-Zip" in l || "7zS" in l -> "схоже на 7-Zip SFX"
+                else -> "невідомий тип"
+            }
+            return "${e.javaClass.simpleName}: ${e.message} ($kind)"
+        }
+    }
 
     /** Спільний аналіз для папки й образів: fs уже вказує на корінь, де лежить інсталятор (або над ним). */
     private fun analyzeFs(fs: SourceFs, where: String, isoFiles: List<File>, inner: String): Analysis {
-        val setupRel = findInstallerExe(fs, ::isInno) ?: throw IllegalStateException(
-            "$where: не знайдено інсталятор Inno Setup (Setup.exe, start.exe або інший .exe у корені). Файли: " +
-                fs.find("", "*", false).take(10).joinToString())
+        val found = findInstallerExe(fs, ::innoError)
+        val setupRel = found.rel ?: throw IllegalStateException("$where: інсталятор Inno Setup не знайдено. ${found.report}")
         val h = InnoHeader.load(fs.readBytes(setupRel))
         val info = ScriptScan.scan(h.setupId, h.header)
         val setup = runCatching { InnoFiles.parse(h) }.getOrNull()
