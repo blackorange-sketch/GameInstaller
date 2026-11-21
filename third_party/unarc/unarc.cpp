@@ -23,6 +23,8 @@ CUI UI;
 
 int main (int argc, char *argv[])
 {
+  setvbuf(stdout, NULL, _IOLBF, 0);   /* line-buffered output: nothing lost on abort */
+  setvbuf(stderr, NULL, _IONBF, 0);
   UI.DisplayHeader (HEADER1 NAME);
   COMMAND command (argc, argv);    // Распарсить команду
   if (command.ok)                  // Если парсинг был удачен и можно выполнить команду

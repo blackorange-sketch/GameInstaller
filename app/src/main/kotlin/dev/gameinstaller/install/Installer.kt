@@ -274,6 +274,9 @@ class Installer(private val ctx: Context) {
                     }
                     if (!cancelled && code != 0) {
                         tail.forEach { InstallState.log("[$name] $it") }
+                        try {
+                            InstallState.log("[$name] вільно: пам'ять застосунку ${PathUtil.human(StatFs(ctx.cacheDir.path).availableBytes)}, сховище ${PathUtil.human(StatFs(destDir.path).availableBytes)}")
+                        } catch (_: Exception) { }
                         failure.compareAndSet(null, if (code == -2)
                             "Архів $name не відповідає понад 7 хвилин: найімовірніше, метод стиснення не підтримується. Дивіться рядок «метод …» у журналі."
                         else "Помилка розпаковки $name (код $code). Дивіться журнал.")
