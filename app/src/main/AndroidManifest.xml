@@ -10,6 +10,7 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <application
+        android:largeHeap="true"
         android:label="GameInstaller"
         android:extractNativeLibs="true"
         android:requestLegacyExternalStorage="true"

@@ -3,6 +3,9 @@ package dev.gameinstaller.install
 import android.content.Context
 import android.os.StatFs
 import dev.gameinstaller.PathUtil
+import dev.gameinstaller.inno.InnoExtractor
+import dev.gameinstaller.inno.InnoFiles
+import dev.gameinstaller.inno.InnoHeader
 import java.io.BufferedReader
 import java.io.File
 import java.io.InputStreamReader
@@ -43,12 +46,34 @@ class Installer(private val ctx: Context) {
         return code
     }
 
-    fun install(jobs: List<ArchiveJob>, destDir: File) {
+    fun install(jobs: List<ArchiveJob>, destDir: File, setupExe: File? = null) {
         InstallState.reset()
         InstallState.update(running = true, phase = "Підготовка…", percent = 0)
         try {
             destDir.mkdirs()
             require(destDir.isDirectory && destDir.canWrite()) { "Немає доступу на запис у ${destDir.path}" }
+
+            // 0) файли, що лежать у самому контейнері Inno (Setup-1a.bin): ставимо першими, архіви потім перезапишуть однакові
+            var innoBytes = 0L
+            if (setupExe != null) {
+                try {
+                    InstallState.update(phase = "Файли з інсталятора…")
+                    val parsed = InnoHeader.load(setupExe.readBytes())
+                    val setup = InnoFiles.parse(parsed)
+                    val items = setup.appFiles()
+                    innoBytes = items.map { it.second }.distinctBy { it.slice to (it.offset to it.foffset) }.sumOf { it.size }
+                    if (items.isNotEmpty()) {
+                        require(StatFs(destDir.path).availableBytes > innoBytes) { "Мало місця для файлів інсталятора" }
+                        val n = InnoExtractor.extractApp(setupExe.parentFile!!, setupExe.nameWithoutExtension, setup, destDir,
+                            { InstallState.log("• $it") }, { cancelled })
+                        InstallState.log("Файлів із контейнера інсталятора: $n")
+                    }
+                } catch (e: InterruptedException) { throw e
+                } catch (e: Exception) {
+                    if (jobs.isEmpty()) throw e
+                    InstallState.log("ПОПЕРЕДЖЕННЯ: файли з контейнера інсталятора не розпаковано: ${e.message}")
+                }
+            }
 
             // 1) підрахунок загального розміру
             val sizes = LongArray(jobs.size)

@@ -17,6 +17,7 @@ import android.widget.ScrollView
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import dev.gameinstaller.inno.InnoFiles
 import dev.gameinstaller.inno.InnoHeader
 import dev.gameinstaller.inno.ScriptScan
 import dev.gameinstaller.install.InstallService
@@ -40,6 +41,8 @@ class MainActivity : AppCompatActivity() {
 
     private var scan: ScriptScan.Info? = null
     private var srcDir: File? = null
+    private var setupFile: File? = null
+    private var innoFileCount = 0
     private var jobsPaths = listOf<String>()
     private var jobsPwds = listOf<String>()
     private var destParent: String? = null
@@ -150,46 +153,56 @@ class MainActivity : AppCompatActivity() {
     private fun refresh() {
         val d = currentDest()
         destInfo.text = if (destParent == null) "Не обрано" else "Буде встановлено в: ${d?.path}"
-        installBtn.isEnabled = scan != null && jobsPaths.isNotEmpty() && d != null &&
+        installBtn.isEnabled = scan != null && (jobsPaths.isNotEmpty() || innoFileCount > 0) && d != null &&
             nameEdit.text.isNotBlank() && !InstallState.snap.running
+    }
+
+    private class Analysis(
+        val msg: String, val info: ScriptScan.Info, val paths: List<String>,
+        val pwds: List<String>, val setupExe: File, val innoCount: Int,
+    )
+
+    private fun analyze(dir: File): Analysis {
+        val setupExe = dir.listFiles()?.firstOrNull { it.name.equals("Setup.exe", true) }
+            ?: throw IllegalStateException("У папці немає Setup.exe")
+        val h = InnoHeader.load(setupExe.readBytes())
+        val info = ScriptScan.scan(h.setupId, h.header)
+        val inno = runCatching { InnoFiles.parse(h).appFiles() }.getOrDefault(emptyList())
+        require(info.archives.isNotEmpty() || inno.isNotEmpty()) {
+            "У цьому інсталяторі немає ні архівів FreeArc, ні файлів у контейнері Inno, які можна розпакувати."
+        }
+        val files = info.archives.map { File(dir, it.file) }
+        val missing = files.filter { !it.exists() }
+        require(missing.isEmpty()) { "Бракує файлів: " + missing.joinToString { it.name } }
+        val msg = buildString {
+            appendLine(info.title)
+            if (files.isNotEmpty()) {
+                appendLine("Архівів: ${files.size}, разом ${PathUtil.human(files.sumOf { it.length() })}")
+                files.forEach { appendLine("  ${it.name}  ${PathUtil.human(it.length())}") }
+            }
+            if (inno.isNotEmpty()) {
+                val total = inno.map { it.second }.distinctBy { it.slice to (it.offset to it.foffset) }.sumOf { it.size }
+                appendLine("Файлів у контейнері інсталятора: ${inno.size} (${PathUtil.human(total)})")
+            }
+            if (info.tools.any { it == "srep" || it == "precomp" })
+                append("Примітка: скрипт згадує srep/precomp; дрібні додаткові архіви з ними пропускаються.")
+        }
+        return Analysis(msg, info, files.map { it.path }, info.archives.map { it.password }, setupExe, inno.size)
     }
 
     private fun analyzeSource(dir: File) {
         srcInfo.text = "Аналізую…"
         thread {
-            var msg = ""
-            var info: ScriptScan.Info? = null
-            var paths = listOf<String>()
-            var pwds = listOf<String>()
-            try {
-                val setup = dir.listFiles()?.firstOrNull { it.name.equals("Setup.exe", true) }
-                    ?: throw IllegalStateException("У папці немає Setup.exe")
-                val h = InnoHeader.load(setup.readBytes())
-                val i = ScriptScan.scan(h.setupId, h.header)
-                require(i.archives.isNotEmpty()) {
-                    "Це Inno Setup, але без архівів FreeArc. Такі інсталятори поки не підтримуються."
-                }
-                val files = i.archives.map { File(dir, it.file) }
-                val missing = files.filter { !it.exists() }
-                require(missing.isEmpty()) { "Бракує файлів: " + missing.joinToString { it.name } }
-                info = i
-                paths = files.map { it.path }
-                pwds = i.archives.map { it.password }
-                msg = buildString {
-                    appendLine(i.title)
-                    appendLine("Архівів: ${files.size}, разом ${PathUtil.human(files.sumOf { it.length() })}")
-                    files.forEach { appendLine("  ${it.name}  ${PathUtil.human(it.length())}") }
-                    if (i.tools.any { it == "srep" || it == "precomp" })
-                        append("Примітка: скрипт згадує srep/precomp; дрібні додаткові архіви з ними пропускаються.")
-                }
+            val r = try {
+                analyze(dir)
             } catch (e: Exception) {
-                runOnUiThread { srcInfo.text = "Помилка: ${e.message}"; scan = null; jobsPaths = emptyList(); refresh() }
+                runOnUiThread { srcInfo.text = "Помилка: ${e.message}"; scan = null; jobsPaths = emptyList(); innoFileCount = 0; refresh() }
                 return@thread
             }
             runOnUiThread {
-                srcInfo.text = msg
-                scan = info; srcDir = dir; jobsPaths = paths; jobsPwds = pwds
-                if (nameEdit.text.isBlank()) nameEdit.setText(PathUtil.sanitizeDirName(info!!.defaultDirName))
+                srcInfo.text = r.msg
+                scan = r.info; srcDir = dir; setupFile = r.setupExe; jobsPaths = r.paths; jobsPwds = r.pwds; innoFileCount = r.innoCount
+                if (nameEdit.text.isBlank()) nameEdit.setText(PathUtil.sanitizeDirName(r.info.defaultDirName))
                 refresh()
             }
         }
@@ -197,6 +210,6 @@ class MainActivity : AppCompatActivity() {
 
     private fun startInstall() {
         val d = currentDest() ?: return
-        InstallService.start(this, jobsPaths, jobsPwds, d.path)
+        InstallService.start(this, jobsPaths, jobsPwds, d.path, setupFile?.path)
     }
 }

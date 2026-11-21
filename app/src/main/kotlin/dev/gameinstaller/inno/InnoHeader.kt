@@ -12,7 +12,9 @@ object InnoHeader {
     private val LDR_PREFIX = "rDlPtS".toByteArray(Charsets.US_ASCII)
     private const val SETUP_ID_LEN = 64
 
-    class Result(val setupId: String, val header: ByteArray)
+    class Result(val setupId: String, val header: ByteArray, val data: ByteArray)
+
+    private class Block(val data: ByteArray, val end: Int)
 
     fun load(exe: ByteArray): Result {
         val at = indexOf(exe, LDR_PREFIX)
@@ -21,11 +23,14 @@ object InnoHeader {
         val headerOffset = bb.getInt(at + 12 + 5 * 4).toLong() and 0xFFFFFFFFL
         val off = headerOffset.toInt()
         val id = String(exe, off, SETUP_ID_LEN, Charsets.US_ASCII).substringBefore('\u0000')
-        return Result(id, readBlock(exe, off + SETUP_ID_LEN))
+        val b1 = readBlock(exe, off + SETUP_ID_LEN)
+        // другий блок (записи про розташування файлів) іде одразу за першим
+        val b2 = readBlock(exe, b1.end)
+        return Result(id, b1.data, b2.data)
     }
 
     /** Блок: crc32(4), stored size(4), flag(1); далі шматки по 4096 байт + crc32(4). */
-    private fun readBlock(d: ByteArray, off: Int): ByteArray {
+    private fun readBlock(d: ByteArray, off: Int): Block {
         val bb = ByteBuffer.wrap(d).order(ByteOrder.LITTLE_ENDIAN)
         val size = bb.getInt(off + 4)
         val compressed = d[off + 8].toInt() != 0
@@ -39,7 +44,8 @@ object InnoHeader {
             rem -= n
         }
         val data = raw.toByteArray()
-        if (!compressed) return data
+        val end = off + 9 + size
+        if (!compressed) return Block(data, end)
         val props = data[0].toInt() and 0xFF
         val dict = ByteBuffer.wrap(data, 1, 4).order(ByteOrder.LITTLE_ENDIAN).int
         val input = ByteArrayInputStream(data, 5, data.size - 5)
@@ -58,7 +64,7 @@ object InnoHeader {
         } catch (_: IOException) {
             // очікуваний кінець потоку без маркера
         }
-        return out.toByteArray()
+        return Block(out.toByteArray(), end)
     }
 
     private fun indexOf(h: ByteArray, n: ByteArray): Int {
