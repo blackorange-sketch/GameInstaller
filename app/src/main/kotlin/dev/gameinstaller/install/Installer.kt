@@ -73,12 +73,17 @@ class Installer(private val ctx: Context) {
                 }
             } catch (_: InterruptedException) { }
         } else null
-        BufferedReader(InputStreamReader(p.inputStream, Charsets.UTF_8)).use { r ->
-            while (true) {
-                val line = r.readLine() ?: break
-                last.set(System.currentTimeMillis())
-                onLine(line)
+        try {
+            BufferedReader(InputStreamReader(p.inputStream, Charsets.UTF_8)).use { r ->
+                while (true) {
+                    val line = r.readLine() ?: break
+                    last.set(System.currentTimeMillis())
+                    onLine(line)
+                }
             }
+        } catch (e: java.io.IOException) {
+            // процес зупинено (скасування або таймер-запобіжник) — потік закрито
+            if (!cancelled && !timedOut.get()) throw e
         }
         val code = p.waitFor()
         wd?.interrupt()
