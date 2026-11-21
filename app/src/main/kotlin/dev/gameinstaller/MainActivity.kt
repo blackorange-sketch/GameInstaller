@@ -228,6 +228,24 @@ class MainActivity : AppCompatActivity() {
         throw IllegalStateException((firstErr?.message ?: "порожні образи") + udf)
     }
 
+    private fun analyzeSource(dir: File?, isoFiles: List<File> = emptyList()) {
+        srcInfo.text = "Аналізую…"
+        thread {
+            val r = try {
+                if (isoFiles.isNotEmpty()) analyzeIso(isoFiles) else analyze(dir!!)
+            } catch (e: Exception) {
+                runOnUiThread { srcInfo.text = "Помилка: ${e.message}"; scan = null; jobsPaths = emptyList(); innoFileCount = 0; refresh() }
+                return@thread
+            }
+            runOnUiThread {
+                srcInfo.text = r.msg
+                scan = r.info; srcDir = dir; setupRel = r.setupRel; isoList = r.isos; isoInner = r.inner; jobsPaths = r.paths; jobsPwds = r.pwds; innoFileCount = r.innoCount
+                if (nameEdit.text.isBlank()) nameEdit.setText(PathUtil.sanitizeDirName(r.info.defaultDirName))
+                refresh()
+            }
+        }
+    }
+
     private fun startInstall() {
         val d = currentDest() ?: return
         InstallService.start(this, jobsPaths, jobsPwds, d.path, setupRel, srcDir?.path,
