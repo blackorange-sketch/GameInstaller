@@ -83,10 +83,15 @@ void RegisterExternalCompressors (char *progname)
 #ifndef FREEARC_TINY
   // Open config file arc.ini found in the same dir as sfx/unarc
   char *cfgfile = "arc.ini";
-  char *name = (char*) malloc (strlen(progname) + strlen(cfgfile));
+  char *envcfg = getenv("GI_ARC_INI");
+  char *name = (char*) malloc (strlen(progname) + strlen(cfgfile) + (envcfg? strlen(envcfg) : 0) + 2);
                                                  if (!name)  return;
-  strcpy(name, progname);
-  strcpy(drop_dirname(name), cfgfile);
+  if (envcfg && *envcfg) {
+    strcpy(name, envcfg);
+  } else {
+    strcpy(name, progname);
+    strcpy(drop_dirname(name), cfgfile);
+  }
   MYFILE f(name);
   if (!f.tryOpen(READ_MODE))                     return;
 

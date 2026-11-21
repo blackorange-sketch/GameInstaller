@@ -32,10 +32,28 @@ class Installer(private val ctx: Context) {
         return f
     }
 
+    /** Тимчасові файли зовнішніх розпакувальників (srep) — поруч із грою, а не у внутрішній пам'яті. */
+    @Volatile private var tmpDir: File? = null
+
+    /** arc.ini для unarc: підключає srep (libsrep.so з nativeLibraryDir) як зовнішній розпакувальник. */
+    private fun arcIni(): File? {
+        val srep = File(ctx.applicationInfo.nativeLibraryDir, "libsrep.so")
+        if (!srep.exists()) return null
+        val ini = File(ctx.cacheDir, "arc.ini")
+        ini.writeText(
+            "[External compressor:srep]\n" +
+            "unpackcmd = ${srep.path} -d \$\$arcpackedfile\$\$.tmp \$\$arcdatafile\$\$.tmp\n" +
+            "datafile = \$\$arcdatafile\$\$.tmp\n" +
+            "packedfile = \$\$arcpackedfile\$\$.tmp\n"
+        )
+        return ini
+    }
+
     /** @param idleSec якщо > 0 і unarc мовчить довше, процес зупиняється (повертає -2): так видно непідтримуваний метод стиснення. */
     private fun run(args: List<String>, idleSec: Int = 0, onLine: (String) -> Unit): Int {
         val pb = ProcessBuilder(listOf(unarcBin().path) + args).redirectErrorStream(true)
-        pb.environment()["TMPDIR"] = ctx.cacheDir.path
+        pb.environment()["TMPDIR"] = (tmpDir ?: ctx.cacheDir).path
+        arcIni()?.let { pb.environment()["GI_ARC_INI"] = it.path }
         val p = pb.start()
         procs.add(p)
         val last = java.util.concurrent.atomic.AtomicLong(System.currentTimeMillis())
@@ -73,6 +91,8 @@ class Installer(private val ctx: Context) {
             destDir.mkdirs()
             require(destDir.isDirectory && destDir.canWrite()) { "Немає доступу на запис у ${destDir.path}" }
             val stageDir = File(destDir.parentFile ?: destDir, ".gameinstaller_stage")
+            val tmpD = File(destDir.parentFile ?: destDir, ".gameinstaller_tmp").also { it.mkdirs() }
+            tmpDir = if (tmpD.isDirectory && tmpD.canWrite()) tmpD else null
 
             /** Повертає справжній файл: з папки як є, з образу копіює в тимчасову папку. */
             fun local(rel: String): File {
@@ -219,6 +239,7 @@ class Installer(private val ctx: Context) {
             InstallState.update(running = false, phase = "Помилка", error = e.message ?: e.toString())
         } finally {
             stage?.deleteRecursively()
+            tmpDir?.deleteRecursively(); tmpDir = null
         }
     }
 

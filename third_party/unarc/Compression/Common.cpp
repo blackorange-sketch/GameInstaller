@@ -426,7 +426,7 @@ int RunCommand (const CFILENAME command, const CFILENAME curdir, int wait_finish
   getcwd(olddir, MY_FILENAME_MAX);
 
   chdir(curdir);
-  sprintf(cmd, "./%s%s", command, wait_finish? "" : " &");
+  sprintf(cmd, "%s%s%s", command[0]=='/'? "" : "./", command, wait_finish? "" : " &");
   int ExitCode = system(cmd);
 
   chdir(olddir);
