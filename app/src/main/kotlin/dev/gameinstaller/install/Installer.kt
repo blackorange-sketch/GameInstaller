@@ -32,20 +32,33 @@ class Installer(private val ctx: Context) {
         return f
     }
 
-    private fun run(args: List<String>, onLine: (String) -> Unit): Int {
+    /** @param idleSec якщо > 0 і unarc мовчить довше, процес зупиняється (повертає -2): так видно непідтримуваний метод стиснення. */
+    private fun run(args: List<String>, idleSec: Int = 0, onLine: (String) -> Unit): Int {
         val pb = ProcessBuilder(listOf(unarcBin().path) + args).redirectErrorStream(true)
         pb.environment()["TMPDIR"] = ctx.cacheDir.path
         val p = pb.start()
         procs.add(p)
+        val last = java.util.concurrent.atomic.AtomicLong(System.currentTimeMillis())
+        @Volatile var timedOut = false
+        val wd = if (idleSec > 0) kotlin.concurrent.thread(isDaemon = true, name = "unarc-watchdog") {
+            try {
+                while (true) {
+                    Thread.sleep(5000)
+                    if (System.currentTimeMillis() - last.get() > idleSec * 1000L) { timedOut = true; p.destroyForcibly(); break }
+                }
+            } catch (_: InterruptedException) { }
+        } else null
         BufferedReader(InputStreamReader(p.inputStream, Charsets.UTF_8)).use { r ->
             while (true) {
                 val line = r.readLine() ?: break
+                last.set(System.currentTimeMillis())
                 onLine(line)
             }
         }
         val code = p.waitFor()
+        wd?.interrupt()
         procs.remove(p)
-        return code
+        return if (timedOut) -2 else code
     }
 
     /**
@@ -140,6 +153,10 @@ class Installer(private val ctx: Context) {
                 InstallState.update(phase = "Читаю список файлів (${i + 1}/${jobs.size})…")
                 var total = -1L
                 val code = run(listOf("v", "-p${j.password}", j.path)) { line ->
+                    if (line.startsWith("@@M ")) {
+                        val m = line.removePrefix("@@M ").substringBefore("+aes")
+                        if (m.isNotEmpty() && !m.startsWith("storing")) InstallState.log("метод ${File(j.path).name}: $m")
+                    }
                     summary.find(line)?.let { total = it.groupValues[2].toLong() }
                     if (line.startsWith("ERROR")) InstallState.log(line)
                 }
@@ -167,7 +184,7 @@ class Installer(private val ctx: Context) {
                     val name = File(j.path).name
                     InstallState.log("▶ $name")
                     var last = 0L
-                    val code = run(listOf("x", "-o+", "-p${j.password}", "-w${ctx.cacheDir.path}", "-dp${destDir.path}", j.path)) { line ->
+                    val code = run(listOf("x", "-o+", "-p${j.password}", "-w${ctx.cacheDir.path}", "-dp${destDir.path}", j.path), idleSec = 420) { line ->
                         val pm = written.find(line)
                         if (pm != null) {
                             val w = pm.groupValues[1].toLong().coerceAtMost(sizes[i])
@@ -183,7 +200,9 @@ class Installer(private val ctx: Context) {
                         }
                     }
                     if (!cancelled && code != 0) {
-                        failure.compareAndSet(null, "Помилка розпаковки $name (код $code). Дивіться журнал.")
+                        failure.compareAndSet(null, if (code == -2)
+                            "Архів $name не відповідає понад 7 хвилин: найімовірніше, метод стиснення не підтримується. Дивіться рядок «метод …» у журналі."
+                        else "Помилка розпаковки $name (код $code). Дивіться журнал.")
                         cancel()
                     } else if (!cancelled) { InstallState.setArcPercent(i, 100); InstallState.log("✔ $name") }
                 }
