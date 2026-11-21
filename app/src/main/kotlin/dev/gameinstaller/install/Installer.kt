@@ -204,7 +204,7 @@ class Installer(private val ctx: Context) {
                     val name = File(j.path).name
                     InstallState.log("▶ $name")
                     var last = 0L
-                    val code = run(listOf("x", "-o+", "-p${j.password}", "-w${ctx.cacheDir.path}", "-dp${destDir.path}", j.path), idleSec = 420) { line ->
+                    val code = run(listOf("x", "-o+", "-p${j.password}", "-w${(tmpDir ?: ctx.cacheDir).path}", "-dp${destDir.path}", j.path), idleSec = 420) { line ->
                         val pm = written.find(line)
                         if (pm != null) {
                             val w = pm.groupValues[1].toLong().coerceAtMost(sizes[i])
