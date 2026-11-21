@@ -9,7 +9,7 @@ LINKOBJ_FAR_PLUGIN = $(OBJDIR)/Environment.o $(OBJDIR)/Common.o $(OBJDIR)/Compre
 LINKOBJ_TINY = $(LINKOBJ_FAR_PLUGIN) $(OBJDIR)/C_BCJ.o $(OBJDIR)/C_Dict.o $(OBJDIR)/C_Delta.o
 LINKOBJ_MINI = $(LINKOBJ_TINY) $(OBJDIR)/C_REP.o $(OBJDIR)/C_LZP.o $(OBJDIR)/C_PPMD.o $(OBJDIR)/C_External.o
 LINKOBJ = $(LINKOBJ_MINI) $(OBJDIR)/C_MM.o $(OBJDIR)/C_TTA.o \
-          $(OBJDIR)/C_Tornado.o $(OBJDIR)/C_GRZip.o $(OBJDIR)/C_Encryption.o
+          $(OBJDIR)/C_Tornado.o $(OBJDIR)/C_GRZip.o $(OBJDIR)/C_Encryption.o $(OBJDIR)/C_DisPack.o
 
 UNARC = ArcStructure.h ArcCommand.h ArcProcess.h
 CUI = CUI.h
@@ -85,3 +85,6 @@ $(OBJDIR)/C_GRZip.o: Compression/GRZip/C_GRZip.cpp Compression/GRZip/C_GRZip.h $
 
 $(OBJDIR)/C_Encryption.o: Compression/_Encryption/C_Encryption.cpp Compression/_Encryption/C_Encryption.h $(HEADERS)
 	$(CXX) -c $(CFLAGS) -w -ICompression -ICompression/_Encryption -ICompression/_Encryption/headers -o $*.o $<
+
+$(OBJDIR)/C_DisPack.o: Compression/DisPack/C_DisPack.cpp Compression/DisPack/C_DisPack.h $(HEADERS)
+	$(CXX) -c $(CFLAGS) -o $@ $<
