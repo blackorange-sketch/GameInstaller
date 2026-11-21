@@ -99,24 +99,24 @@ class IsoFs(private val set: IsoSet, inner: String) : SourceFs {
     }
 }
 
-/** Результат пошуку інсталятора: шлях або опис того, що не підійшло. */
-class InstallerSearch(val rel: String?, val report: String)
+/** Результат пошуку інсталятора: усі знайдені інсталятори Inno (шляхи) або опис того, що не підійшло. */
+class InstallerSearch(val found: List<String>, val report: String)
 
-/** Шукає виконуваний файл Inno Setup: спочатку setup.exe/start.exe у корені, потім будь-які .exe (мілкі першими). */
-fun findInstallerExe(fs: SourceFs, check: (ByteArray) -> String?): InstallerSearch {
+/** Шукає виконувані файли Inno Setup у корені fs: setup.exe і start.exe першими, далі решта. */
+fun findInstallerExes(fs: SourceFs, check: (ByteArray) -> String?): InstallerSearch {
     val exes = fs.find("", "*.exe", false).sortedWith(compareBy({
         when (it.lowercase()) { "setup.exe" -> 0; "start.exe" -> 1; else -> 2 }
-    }, { it.count { c -> c == '/' } }, { it }))
+    }, { it }))
     val rep = StringBuilder()
+    val ok = ArrayList<String>()
     for (name in exes.take(12)) {
         val size = fs.size(name)
         if (size > 400L * 1024 * 1024) { rep.append("$name: завеликий (${size shr 20} МБ); "); continue }
         val err = try { check(fs.readBytes(name)) } catch (e: Throwable) { "читання: ${e.message}" }
-        if (err == null) return InstallerSearch(name, "")
-        rep.append("$name (${size shr 10} КБ): $err; ")
+        if (err == null) ok.add(name) else rep.append("$name (${size shr 10} КБ): $err; ")
     }
     if (exes.isEmpty()) rep.append("жодного .exe")
-    return InstallerSearch(null, rep.toString())
+    return InstallerSearch(ok, rep.toString())
 }
 
 /** Той самий [fs], але шляхи рахуються від підпапки [dir] (де лежить інсталятор). */

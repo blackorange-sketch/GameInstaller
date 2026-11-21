@@ -26,7 +26,7 @@ import dev.gameinstaller.install.InstallService
 import dev.gameinstaller.install.SourceFs
 import dev.gameinstaller.install.FolderFs
 import dev.gameinstaller.install.IsoFs
-import dev.gameinstaller.install.findInstallerExe
+import dev.gameinstaller.install.findInstallerExes
 import dev.gameinstaller.inno.ExternalCopier
 import dev.gameinstaller.install.InstallState
 import java.io.File
@@ -189,7 +189,7 @@ class MainActivity : AppCompatActivity() {
     private class Analysis(
         val msg: String, val info: ScriptScan.Info, val paths: List<String>,
         val pwds: List<String>, val setupRel: String, val innoCount: Int,
-        val isos: List<File> = emptyList(), val inner: String = "",
+        val isos: List<File> = emptyList(), val inner: String = "", val srcRoot: File? = null,
     )
 
     /** null якщо це інсталятор Inno, інакше причина відмови з підказкою про тип інсталятора. */
@@ -208,23 +208,21 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /** Спільний аналіз для папки й образів: fs уже вказує на корінь, де лежить інсталятор (або над ним). */
-    private fun analyzeFs(fs: SourceFs, where: String, isoFiles: List<File>, inner: String): Analysis {
-        val found = findInstallerExe(fs, ::innoError)
-        val setupRel = found.rel ?: throw IllegalStateException("$where: інсталятор Inno Setup не знайдено. ${found.report}")
+    /** Аналіз одного інсталятора [setupRel] у fs (fs вказує на папку, де він лежить). */
+    private fun analyzeFs(fs: SourceFs, setupRel: String, isoFiles: List<File>, inner: String, srcRoot: File?): Analysis {
         val h = InnoHeader.load(fs.readBytes(setupRel))
         val info = ScriptScan.scan(h.setupId, h.header)
         val setup = runCatching { InnoFiles.parse(h) }.getOrNull()
         val inno = setup?.appFiles().orEmpty()
         val ext = setup?.let { ExternalCopier.plan(it) }.orEmpty()
         require(info.archives.isNotEmpty() || inno.isNotEmpty() || ext.isNotEmpty()) {
-            "У цьому інсталяторі ($setupRel) немає ні архівів FreeArc, ні файлів, які можна розпакувати."
+            "У цьому інсталяторі ($setupRel) немає ні архівів FreeArc, ні файлів, які можна розпаковати."
         }
         val missing = info.archives.filter { !fs.exists(it.file) }
         require(missing.isEmpty()) { "Бракує файлів: " + missing.joinToString { it.file } + if (isoFiles.isNotEmpty()) ". Додайте інший образ?" else "" }
         val msg = buildString {
             appendLine(info.title)
-            appendLine("Інсталятор: $setupRel")
+            appendLine("Інсталятор: ${if (inner.isEmpty()) "" else "$inner/"}$setupRel")
             if (isoFiles.isNotEmpty()) appendLine("Образів: ${isoFiles.size} (" + isoFiles.joinToString { it.name } + "); архіви тимчасово копіюються на пристрій")
             if (info.archives.isNotEmpty()) {
                 appendLine("Архівів: ${info.archives.size}, разом ${PathUtil.human(info.archives.sumOf { fs.size(it.file) })}")
@@ -236,35 +234,73 @@ class MainActivity : AppCompatActivity() {
                 append("Примітка: скрипт згадує srep/precomp; дрібні додаткові архіви з ними пропускаються.")
         }
         return Analysis(msg, info, info.archives.map { it.file }, info.archives.map { it.password },
-            setupRel, inno.size + ext.size, isoFiles, inner)
+            setupRel, inno.size + ext.size, isoFiles, inner, srcRoot)
     }
 
-    private fun analyze(dir: File) = analyzeFs(FolderFs(dir), "У папці", emptyList(), "")
+    /** Кандидат: де лежить інсталятор. [fs] кореня + шлях усередині. */
+    private class Cand(val fs: SourceFs, val rel: String, val inner: String, val srcRoot: File?) {
+        val label get() = (if (inner.isEmpty()) "" else "$inner/") + rel
+    }
 
-    private fun analyzeIso(isoFiles: List<File>): Analysis {
-        val set = IsoSet(isoFiles.map { IsoImage(it) })
-        // інсталятор шукаємо в корені образів, а якщо його там немає, у підпапках першого рівня
-        val roots = listOf("") + set.entries.values.map { it.dir.substringBefore('/') }.filter { it.isNotEmpty() }.distinct()
-        var firstErr: Exception? = null
-        for (r in roots) {
-            try { return analyzeFs(IsoFs(set, r), "В образах", isoFiles, r) } catch (e: Exception) { if (firstErr == null) firstErr = e }
+    /** Шукає інсталятори Inno в корені й підпапках першого рівня (там, де вони лежать, наприклад data\cnc3ke.exe). */
+    private fun candidates(dirs: List<String>, fsFor: (String) -> SourceFs, rootFile: File?): Pair<List<Cand>, String> {
+        val out = ArrayList<Cand>()
+        val rep = StringBuilder()
+        for (d in dirs) {
+            val fs = fsFor(d)
+            val r = findInstallerExes(fs, ::innoError)
+            r.found.forEach { out.add(Cand(fs, it, d, rootFile?.let { f -> if (d.isEmpty()) f else File(f, d) })) }
+            if (r.report.isNotEmpty()) rep.append(if (d.isEmpty()) "корінь: " else "$d: ").append(r.report)
         }
+        return out to rep.toString()
+    }
+
+    private fun analyze(dir: File): List<Cand> {
+        val subs = dir.listFiles()?.filter { it.isDirectory }?.map { it.name }?.sorted().orEmpty()
+        val (c, rep) = candidates(listOf("") + subs, { d -> FolderFs(if (d.isEmpty()) dir else File(dir, d)) }, dir)
+        if (c.isEmpty()) throw IllegalStateException("У папці інсталятор Inno Setup не знайдено. $rep")
+        return c
+    }
+
+    private fun analyzeIso(isoFiles: List<File>): List<Cand> {
+        val set = IsoSet(isoFiles.map { IsoImage(it) })
+        val subs = set.entries.values.map { it.dir.substringBefore('/') }.filter { it.isNotEmpty() }.distinct().sorted()
+        val (c, rep) = candidates(listOf("") + subs, { d -> IsoFs(set, d) }, null)
         val udf = set.images.mapNotNull { it.udfNote }.firstOrNull()?.let { ". UDF: $it" } ?: ""
-        throw IllegalStateException((firstErr?.message ?: "порожні образи") + udf)
+        if (c.isEmpty()) throw IllegalStateException("В образах інсталятор Inno Setup не знайдено. $rep$udf")
+        return c
     }
 
     private fun analyzeSource(dir: File?, isoFiles: List<File> = emptyList()) {
         srcInfo.text = "Аналізую…"
         thread {
-            val r = try {
+            val cands = try {
                 if (isoFiles.isNotEmpty()) analyzeIso(isoFiles) else analyze(dir!!)
             } catch (e: Exception) {
                 runOnUiThread { srcInfo.text = "Помилка: ${e.message}"; scan = null; jobsPaths = emptyList(); innoFileCount = 0; refresh() }
                 return@thread
             }
             runOnUiThread {
+                if (cands.size == 1) applyCand(cands[0], dir, isoFiles)
+                else android.app.AlertDialog.Builder(this)
+                    .setTitle("Знайдено кілька інсталяторів")
+                    .setItems(cands.map { it.label }.toTypedArray()) { _, i -> applyCand(cands[i], dir, isoFiles) }
+                    .setOnCancelListener { srcInfo.text = "Не обрано" }
+                    .show()
+            }
+        }
+    }
+
+    private fun applyCand(c: Cand, dir: File?, isoFiles: List<File>) {
+        srcInfo.text = "Аналізую…"
+        thread {
+            val r = try { analyzeFs(c.fs, c.rel, isoFiles, c.inner, c.srcRoot) } catch (e: Exception) {
+                runOnUiThread { srcInfo.text = "Помилка: ${e.message}"; scan = null; jobsPaths = emptyList(); innoFileCount = 0; refresh() }
+                return@thread
+            }
+            runOnUiThread {
                 srcInfo.text = r.msg
-                scan = r.info; srcDir = dir; setupRel = r.setupRel; isoList = r.isos; isoInner = r.inner; jobsPaths = r.paths; jobsPwds = r.pwds; innoFileCount = r.innoCount
+                scan = r.info; srcDir = r.srcRoot ?: dir; setupRel = r.setupRel; isoList = r.isos; isoInner = r.inner; jobsPaths = r.paths; jobsPwds = r.pwds; innoFileCount = r.innoCount
                 if (nameEdit.text.isBlank()) nameEdit.setText(PathUtil.sanitizeDirName(r.info.defaultDirName))
                 refresh()
             }
