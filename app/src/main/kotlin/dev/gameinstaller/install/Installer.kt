@@ -264,7 +264,9 @@ class Installer(private val ctx: Context) {
                             InstallState.update(percent = pct)
                         } else {
                             if (line.startsWith("@@CPU ")) InstallState.log("[$name] CPU: ${line.removePrefix("@@CPU ")}% одного ядра")
-                            else if (!line.startsWith("Extracting") && line.isNotBlank()) { tail.addLast(line); if (tail.size > 8) tail.removeFirst() }
+                            else if (line.startsWith("Unpacking") || line.startsWith("Errorlevel") || line.contains("ERROR", true) || line.contains("abort", true) || line.contains("fdsan", true))
+                                InstallState.log("[$name] $line")
+                            else if (!line.startsWith("Extracting") && line.isNotBlank() && !line.contains("mb/s")) { tail.addLast(line); if (tail.size > 10) tail.removeFirst() }
                             val m = extracting.find(line)
                             if (m != null) InstallState.log(m.groupValues[1])
                             else if (line.startsWith("ERROR") || line.contains("failed", true)) InstallState.log(line)
