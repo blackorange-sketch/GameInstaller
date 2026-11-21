@@ -11,10 +11,11 @@ class ArchiveJob(val path: String, val password: String)
 
 /** Запускає unarc (libunarc.so із nativeLibraryDir) для кожного архіву по черзі. */
 class Installer(private val ctx: Context) {
+    companion object { const val WORKERS = 2 }
     @Volatile private var cancelled = false
-    @Volatile private var proc: Process? = null
+    private val procs = java.util.concurrent.CopyOnWriteArrayList<Process>()
 
-    fun cancel() { cancelled = true; proc?.destroy() }
+    fun cancel() { cancelled = true; procs.forEach { it.destroy() } }
 
     private val summary = Regex("""(\d+) files?, (\d+) bytes""")
     private val extracting = Regex("""^Extracting (.+) \((\d+) bytes\)""")
@@ -29,14 +30,16 @@ class Installer(private val ctx: Context) {
         val pb = ProcessBuilder(listOf(unarcBin().path) + args).redirectErrorStream(true)
         pb.environment()["TMPDIR"] = ctx.cacheDir.path
         val p = pb.start()
-        proc = p
+        procs.add(p)
         BufferedReader(InputStreamReader(p.inputStream, Charsets.UTF_8)).use { r ->
             while (true) {
                 val line = r.readLine() ?: break
                 onLine(line)
             }
         }
-        return p.waitFor()
+        val code = p.waitFor()
+        procs.remove(p)
+        return code
     }
 
     fun install(jobs: List<ArchiveJob>, destDir: File) {
@@ -66,36 +69,45 @@ class Installer(private val ctx: Context) {
             }
             InstallState.log("Усього розпакувати: ${PathUtil.human(grand)}")
 
-            // 2) розпаковка
-            var doneBefore = 0L
-            for ((i, j) in jobs.withIndex()) {
-                if (cancelled) throw InterruptedException()
-                val name = File(j.path).name
-                var inArc = 0L
-                InstallState.update(phase = "Розпаковую $name (${i + 1}/${jobs.size})…")
-                val code = run(listOf("x", "-o+", "-p${j.password}", "-w${ctx.cacheDir.path}", "-dp${destDir.path}", j.path)) { line ->
-                    val m = extracting.find(line)
-                    if (m != null) {
-                        inArc += m.groupValues[2].toLong()
-                        val pct = if (grand > 0) ((doneBefore + inArc) * 100 / grand).toInt().coerceIn(0, 99) else 0
-                        InstallState.log(m.groupValues[1])
-                        InstallState.update(percent = pct)
-                    } else if (line.startsWith("ERROR") || line.contains("failed", true)) {
-                        InstallState.log(line)
+            // 2) розпаковка: до WORKERS архівів одночасно, найбільші першими
+            val done = java.util.concurrent.atomic.AtomicLong(0)
+            val failure = java.util.concurrent.atomic.AtomicReference<String?>(null)
+            val order = jobs.indices.sortedByDescending { sizes[it] }
+            val pool = java.util.concurrent.Executors.newFixedThreadPool(WORKERS)
+            InstallState.update(phase = "Розпаковую (паралельно: $WORKERS)…")
+            val futures = order.map { i ->
+                pool.submit {
+                    if (cancelled || failure.get() != null) return@submit
+                    val j = jobs[i]
+                    val name = File(j.path).name
+                    InstallState.log("▶ $name")
+                    val code = run(listOf("x", "-o+", "-p${j.password}", "-w${ctx.cacheDir.path}", "-dp${destDir.path}", j.path)) { line ->
+                        val m = extracting.find(line)
+                        if (m != null) {
+                            val d = done.addAndGet(m.groupValues[2].toLong())
+                            val pct = if (grand > 0) (d * 100 / grand).toInt().coerceIn(0, 99) else 0
+                            InstallState.log(m.groupValues[1])
+                            InstallState.update(percent = pct)
+                        } else if (line.startsWith("ERROR") || line.contains("failed", true)) {
+                            InstallState.log(line)
+                        }
                     }
+                    if (!cancelled && code != 0) {
+                        failure.compareAndSet(null, "Помилка розпаковки $name (код $code). Дивіться журнал.")
+                        cancel()
+                    } else if (!cancelled) InstallState.log("✔ $name")
                 }
-                if (cancelled) throw InterruptedException()
-                require(code == 0) { "Помилка розпаковки $name (код $code). Дивіться журнал." }
-                doneBefore += sizes[i]
             }
+            futures.forEach { it.get() }
+            pool.shutdown()
+            failure.get()?.let { throw IllegalStateException(it) }
+            if (cancelled) throw InterruptedException()
             InstallState.update(running = false, phase = "Готово", percent = 100, finished = true)
         } catch (e: InterruptedException) {
             InstallState.update(running = false, phase = "Скасовано", error = "Скасовано користувачем")
         } catch (e: Exception) {
             InstallState.log("ПОМИЛКА: ${e.message}")
             InstallState.update(running = false, phase = "Помилка", error = e.message ?: e.toString())
-        } finally {
-            proc = null
         }
     }
 }
