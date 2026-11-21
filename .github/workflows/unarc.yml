@@ -1,0 +1,24 @@
+name: unarc-arm64
+on: [push, workflow_dispatch]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build unarc for Android arm64 (NDK)
+        run: |
+          TC="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          cd third_party/unarc
+          make -f Makefile.android CXX="$TC/aarch64-linux-android26-clang++" \
+               UNIX_LINK_FLAGS="-static-libstdc++ -lpthread -s" -j4
+          file unarc
+          mkdir -p ../../dist && cp unarc ../../dist/unarc-arm64
+      - name: Build unarc for Linux x86_64 (smoke test)
+        run: |
+          cd third_party/unarc && make clean >/dev/null 2>&1 || true
+          rm -f *.o unarc
+          make -f Makefile.android CXX=clang++ -j4 && ./unarc | head -3
+      - uses: actions/upload-artifact@v4
+        with:
+          name: unarc-arm64
+          path: dist/unarc-arm64
