@@ -256,7 +256,14 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun analyze(dir: File): List<Cand> {
-        val subs = dir.listFiles()?.filter { it.isDirectory }?.map { it.name }?.sorted().orEmpty()
+        val subs = ArrayList<String>()
+        fun walk(d: File, rel: String, depth: Int) {
+            if (depth > 4) return
+            for (f in d.listFiles().orEmpty().sortedBy { it.name }) {
+                if (f.isDirectory) { val r = if (rel.isEmpty()) f.name else "$rel/${f.name}"; subs.add(r); walk(f, r, depth + 1) }
+            }
+        }
+        walk(dir, "", 0)
         val (c, rep) = candidates(listOf("") + subs, { d -> FolderFs(if (d.isEmpty()) dir else File(dir, d)) }, dir)
         if (c.isEmpty()) throw IllegalStateException("У папці інсталятор Inno Setup не знайдено. $rep")
         return c
@@ -264,7 +271,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun analyzeIso(isoFiles: List<File>): List<Cand> {
         val set = IsoSet(isoFiles.map { IsoImage(it) })
-        val subs = set.entries.values.map { it.dir.substringBefore('/') }.filter { it.isNotEmpty() }.distinct().sorted()
+        // усі папки, де лежать .exe (інсталятор може бути глибоко, наприклад data/Docs/cnc3ke.exe)
+        val subs = set.entries.values.filter { it.name.endsWith(".exe", true) }.map { it.dir }.filter { it.isNotEmpty() }.distinct().sorted()
         val (c, rep) = candidates(listOf("") + subs, { d -> IsoFs(set, d) }, null)
         val udf = set.images.mapNotNull { it.udfNote }.firstOrNull()?.let { ". UDF: $it" } ?: ""
         if (c.isEmpty()) throw IllegalStateException("В образах інсталятор Inno Setup не знайдено. $rep. Усього файлів в образах: ${set.entries.size}; exe: " +
