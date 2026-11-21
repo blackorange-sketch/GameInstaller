@@ -122,9 +122,9 @@ class MainActivity : AppCompatActivity() {
         root.addView(phase)
         logView = TextView(this).apply { textSize = 11f; typeface = android.graphics.Typeface.MONOSPACE }
         logScroll = ScrollView(this).apply { addView(logView) }
-        root.addView(logScroll, LinearLayout.LayoutParams(-1, 0, 1f))
+        root.addView(logScroll, LinearLayout.LayoutParams(-1, (240 * resources.displayMetrics.density).toInt()))
 
-        setContentView(root)
+        setContentView(ScrollView(this).apply { addView(root) })
         if (Build.VERSION.SDK_INT >= 33) notifPerm.launch(Manifest.permission.POST_NOTIFICATIONS)
     }
 

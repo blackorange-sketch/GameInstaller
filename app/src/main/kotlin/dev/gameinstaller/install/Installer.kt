@@ -18,6 +18,7 @@ class Installer(private val ctx: Context) {
     fun cancel() { cancelled = true; procs.forEach { it.destroy() } }
 
     private val summary = Regex("""(\d+) files?, (\d+) bytes""")
+    private val written = Regex("""^@@ (\d+)""")
     private val extracting = Regex("""^Extracting (.+) \((\d+) bytes\)""")
 
     private fun unarcBin(): File {
@@ -82,18 +83,20 @@ class Installer(private val ctx: Context) {
                     val j = jobs[i]
                     val name = File(j.path).name
                     InstallState.log("▶ $name")
-                    var inArc = 0L
+                    var last = 0L
                     val code = run(listOf("x", "-o+", "-p${j.password}", "-w${ctx.cacheDir.path}", "-dp${destDir.path}", j.path)) { line ->
-                        val m = extracting.find(line)
-                        if (m != null) {
-                            val d = done.addAndGet(m.groupValues[2].toLong())
+                        val pm = written.find(line)
+                        if (pm != null) {
+                            val w = pm.groupValues[1].toLong().coerceAtMost(sizes[i])
+                            val d = done.addAndGet(w - last)
+                            last = w
                             val pct = if (grand > 0) (d * 100 / grand).toInt().coerceIn(0, 99) else 0
-                            inArc += m.groupValues[2].toLong()
-                            InstallState.setArcPercent(i, if (sizes[i] > 0) (inArc * 100 / sizes[i]).toInt().coerceIn(0, 99) else 0)
-                            InstallState.log(m.groupValues[1])
+                            InstallState.setArcPercent(i, if (sizes[i] > 0) (w * 100 / sizes[i]).toInt().coerceIn(0, 99) else 0)
                             InstallState.update(percent = pct)
-                        } else if (line.startsWith("ERROR") || line.contains("failed", true)) {
-                            InstallState.log(line)
+                        } else {
+                            val m = extracting.find(line)
+                            if (m != null) InstallState.log(m.groupValues[1])
+                            else if (line.startsWith("ERROR") || line.contains("failed", true)) InstallState.log(line)
                         }
                     }
                     if (!cancelled && code != 0) {

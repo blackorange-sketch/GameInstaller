@@ -10,6 +10,7 @@ private:
 public:
   void DisplayHeader (char* header);
   bool ProgressFile  (bool isdir, const char *operation, FILENAME filename, uint64 filesize);
+  bool ProgressWrite (uint64 writtenBytes);
   void EndProgress   ();
   bool AllowProcessing (char cmd, int silent, FILENAME arcname, char* comment, int cmtsize, FILENAME outdir);
   FILENAME GetOutDir();
@@ -29,6 +30,19 @@ bool CUI::ProgressFile (bool isdir, const char *operation, FILENAME filename, ui
 {
   printf (isdir?  "%s %s" STR_PATH_DELIMITER "\n"  :  "%s %s (%llu bytes)\n",
           operation, filename, filesize);
+  fflush (stdout);
+  return TRUE;
+}
+
+bool CUI::ProgressWrite (uint64 writtenBytes)
+{
+  // GameInstaller: line "@@ <bytes>" at most once per 8 MB, with flush.
+  static uint64 last = 0;
+  if (writtenBytes < last || writtenBytes - last >= (8u<<20)) {
+    last = writtenBytes;
+    printf ("@@ %llu\n", (unsigned long long) writtenBytes);
+    fflush (stdout);
+  }
   return TRUE;
 }
 
