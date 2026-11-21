@@ -16,7 +16,7 @@ class ArchiveJob(val path: String, val password: String)
 
 /** Запускає unarc (libunarc.so із nativeLibraryDir) для кожного архіву по черзі. */
 class Installer(private val ctx: Context) {
-    companion object { const val WORKERS = 2 }
+    companion object { const val WORKERS = 4 }
     @Volatile private var cancelled = false
     private val procs = java.util.concurrent.CopyOnWriteArrayList<Process>()
 
@@ -207,14 +207,15 @@ class Installer(private val ctx: Context) {
             val done = java.util.concurrent.atomic.AtomicLong(0)
             val failure = java.util.concurrent.atomic.AtomicReference<String?>(null)
             val order = jobs.indices.sortedByDescending { sizes[it] }
-            val pool = java.util.concurrent.Executors.newFixedThreadPool(WORKERS)
-            InstallState.update(phase = "Розпаковую (паралельно: $WORKERS)…")
+            val pool = java.util.concurrent.Executors.newFixedThreadPool(minOf(WORKERS, jobs.size.coerceAtLeast(1)))
+            InstallState.update(phase = "Розпаковую (паралельно: ${minOf(WORKERS, jobs.size)})…")
             val futures = order.map { i ->
                 pool.submit {
                     if (cancelled || failure.get() != null) return@submit
                     val j = jobs[i]
                     val name = File(j.path).name
                     InstallState.log("▶ $name")
+                    val t0 = System.currentTimeMillis()
                     var last = 0L
                     val code = run(listOf("x", "-o+", "-p${j.password}", "-w${(tmpDir ?: ctx.cacheDir).path}", "-dp${destDir.path}", j.path), idleSec = 420) { line ->
                         val pm = written.find(line)
@@ -236,7 +237,7 @@ class Installer(private val ctx: Context) {
                             "Архів $name не відповідає понад 7 хвилин: найімовірніше, метод стиснення не підтримується. Дивіться рядок «метод …» у журналі."
                         else "Помилка розпаковки $name (код $code). Дивіться журнал.")
                         cancel()
-                    } else if (!cancelled) { InstallState.setArcPercent(i, 100); InstallState.log("✔ $name") }
+                    } else if (!cancelled) { InstallState.setArcPercent(i, 100); InstallState.log("✔ $name: ${(System.currentTimeMillis() - t0) / 1000} с, ${sizes[i] / 1048576 * 1000 / ((System.currentTimeMillis() - t0).coerceAtLeast(1))} МБ/с") }
                 }
             }
             futures.forEach { it.get() }
