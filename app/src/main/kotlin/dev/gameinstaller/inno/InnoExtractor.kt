@@ -107,7 +107,7 @@ object InnoExtractor {
      * @return кількість розпакованих файлів
      */
     fun extractApp(
-        srcDir: File, base: String, setup: InnoSetup, destDir: File,
+        openSlice: (String) -> File?, base: String, setup: InnoSetup, destDir: File,
         log: (String) -> Unit, cancelled: () -> Boolean,
     ): Int {
         val items = setup.appFiles()
@@ -117,8 +117,8 @@ object InnoExtractor {
         var count = 0
         for ((key, list) in byChunk) {
             if (cancelled()) return count
-            val slice = findIgnoreCase(srcDir, sliceName(base, key.first, setup.slicesPerDisk))
-                ?: throw IOException("Немає файлу ${sliceName(base, key.first, setup.slicesPerDisk)}")
+            val sliceFile = sliceName(base, key.first, setup.slicesPerDisk)
+            val slice = openSlice(sliceFile) ?: throw IOException("Немає файлу $sliceFile")
             val first = list.first().second
             require(!first.encrypted) { "Зашифровані дані Inno не підтримуються" }
             RandomAccessFile(slice, "r").use { raf ->

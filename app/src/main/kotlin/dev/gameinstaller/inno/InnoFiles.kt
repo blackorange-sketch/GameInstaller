@@ -7,7 +7,7 @@ import java.nio.ByteOrder
  * Розбір таблиць файлів Inno Setup 5.5.x (unicode). Порт tools/inno_extract.py.
  * Структури за innoextract (Daniel Scharrer, ліцензія zlib/libpng).
  */
-class FileEntry(val dest: String, val location: Long)
+class FileEntry(val source: String, val dest: String, val location: Long, val flags: Int)
 
 class DataEntry(
     val slice: Int, val offset: Long, val foffset: Long, val size: Long, val csize: Long,
@@ -79,15 +79,15 @@ object InnoFiles {
 
         val files = ArrayList<FileEntry>(nFiles)
         repeat(nFiles) {
-            r.bytes()                          // source
+            val source = r.str()
             val dest = r.str()
             r.bytes(); r.bytes()               // install_font_name, strong_assembly_name
             repeat(6) { r.bytes() }            // умови (components, tasks, languages, check, after/before install)
             winver(r)
             val loc = r.u32()
             r.u32(); r.u64(); r.skip(2)        // attributes, external_size, permission
-            r.flags(32); r.u8()                // прапорці та тип
-            files.add(FileEntry(dest, loc))
+            val fl = r.flags(32); r.u8()       // прапорці та тип
+            files.add(FileEntry(source, dest, loc, fl))
         }
 
         val d = reader(r1.data)

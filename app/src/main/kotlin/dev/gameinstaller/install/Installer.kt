@@ -3,9 +3,8 @@ package dev.gameinstaller.install
 import android.content.Context
 import android.os.StatFs
 import dev.gameinstaller.PathUtil
+import dev.gameinstaller.inno.ExternalCopier
 import dev.gameinstaller.inno.InnoExtractor
-import dev.gameinstaller.iso.IsoImage
-import dev.gameinstaller.iso.IsoSet
 import dev.gameinstaller.inno.InnoFiles
 import dev.gameinstaller.inno.InnoHeader
 import java.io.BufferedReader
@@ -14,8 +13,6 @@ import java.io.InputStreamReader
 
 class ArchiveJob(val path: String, val password: String)
 
-/** Джерело з образів ISO: innerDir папка зі Setup.exe всередині образів. Імена в ArchiveJob тоді відносні. */
-class IsoSource(val isos: List<File>, val innerDir: String)
 
 /** Запускає unarc (libunarc.so із nativeLibraryDir) для кожного архіву по черзі. */
 class Installer(private val ctx: Context) {
@@ -51,61 +48,71 @@ class Installer(private val ctx: Context) {
         return code
     }
 
-    fun install(jobsIn: List<ArchiveJob>, destDir: File, setupExeIn: File? = null, iso: IsoSource? = null) {
+    /**
+     * @param jobsIn архіви: path відносний до кореня джерела ('/' як роздільник)
+     * @param setupRel шлях до exe-інсталятора Inno у джерелі (для файлів контейнера й зовнішніх файлів)
+     */
+    fun install(jobsIn: List<ArchiveJob>, destDir: File, setupRel: String?, fs: SourceFs) {
         var stage: File? = null
         InstallState.reset()
         InstallState.update(running = true, phase = "Підготовка…", percent = 0)
         try {
             destDir.mkdirs()
             require(destDir.isDirectory && destDir.canWrite()) { "Немає доступу на запис у ${destDir.path}" }
+            val stageDir = File(destDir.parentFile ?: destDir, ".gameinstaller_stage")
 
-            // -1) якщо джерело це образи ISO: копіюємо потрібні файли в тимчасову папку поруч із папкою гри
-            var jobs = jobsIn
-            var setupExe = setupExeIn
-            if (iso != null) {
-                val set = IsoSet(iso.isos.map { IsoImage(it) })
-                val needed = set.neededIn(iso.innerDir)
-                require(needed.isNotEmpty()) { "В образах не знайдено файлів інсталятора" }
-                val st = File(destDir.parentFile ?: destDir, ".gameinstaller_stage")
-                stage = st
-                st.deleteRecursively(); st.mkdirs()
-                val total = needed.sumOf { it.size }
-                require(StatFs(st.path).availableBytes > total) { "Мало місця для тимчасових файлів з образів: потрібно ${PathUtil.human(total)}" }
-                var copied = 0L
-                for (e in needed) {
-                    InstallState.update(phase = "Копіюю з образу: ${e.name}")
-                    InstallState.log("ISO → ${e.name} (${PathUtil.human(e.size)})")
-                    e.image.copyTo(e, File(st, e.name), { cancelled }) { n ->
-                        copied += n
-                        InstallState.update(percent = if (total > 0) (copied * 100 / total).toInt().coerceIn(0, 99) else 0)
-                    }
+            /** Повертає справжній файл: з папки як є, з образу копіює в тимчасову папку. */
+            fun local(rel: String): File {
+                fs.localFile(rel)?.let { return it }
+                stage = stageDir
+                val out = File(stageDir, rel)
+                if (out.exists() && out.length() == fs.size(rel)) return out
+                require(StatFs((stageDir.parentFile ?: stageDir).path).availableBytes > fs.size(rel)) {
+                    "Мало місця для тимчасового файлу ${PathUtil.human(fs.size(rel))} (${rel})"
                 }
-                jobs = jobsIn.map { ArchiveJob(File(st, it.path).path, it.password) }
-                setupExe = setupExeIn?.let { File(st, it.name) }
+                InstallState.update(phase = "Копіюю з образу: ${File(rel).name}")
+                InstallState.log("ISO → $rel (${PathUtil.human(fs.size(rel))})")
+                val total = fs.size(rel).coerceAtLeast(1)
+                var copied = 0L
+                fs.copyTo(rel, out, { cancelled }) { n ->
+                    copied += n
+                    InstallState.update(percent = (copied * 100 / total).toInt().coerceIn(0, 99))
+                }
                 InstallState.update(percent = 0)
+                return out
             }
 
-            // 0) файли, що лежать у самому контейнері Inno (Setup-1a.bin): ставимо першими, архіви потім перезапишуть однакові
-            var innoBytes = 0L
-            if (setupExe != null) {
+            // 0) файли самого інсталятора: контейнер Inno і «зовнішні» файли з диска; архіви потім перезапишуть однакові
+            if (setupRel != null) {
                 try {
                     InstallState.update(phase = "Файли з інсталятора…")
-                    val parsed = InnoHeader.load(setupExe.readBytes())
+                    val parsed = InnoHeader.load(fs.readBytes(setupRel))
                     val setup = InnoFiles.parse(parsed)
+                    val innerDir = setupRel.substringBeforeLast('/', "")
+                    val base = File(setupRel).nameWithoutExtension
                     val items = setup.appFiles()
-                    innoBytes = items.map { it.second }.distinctBy { it.slice to (it.offset to it.foffset) }.sumOf { it.size }
                     if (items.isNotEmpty()) {
-                        require(StatFs(destDir.path).availableBytes > innoBytes) { "Мало місця для файлів інсталятора" }
-                        val n = InnoExtractor.extractApp(setupExe.parentFile!!, setupExe.nameWithoutExtension, setup, destDir,
-                            { InstallState.log("• $it") }, { cancelled })
+                        val n = InnoExtractor.extractApp({ name ->
+                            fs.find(innerDir, name, false).firstOrNull()?.let { local(if (innerDir.isEmpty()) it else "$innerDir/$it") }
+                        }, base, setup, destDir, { InstallState.log("• $it") }, { cancelled })
                         InstallState.log("Файлів із контейнера інсталятора: $n")
+                    }
+                    val ext = ExternalCopier.plan(setup)
+                    if (ext.isNotEmpty()) {
+                        InstallState.update(phase = "Копіюю додаткові файли…")
+                        val rootFs = if (innerDir.isEmpty()) fs else SubFs(fs, innerDir)
+                        val n = ExternalCopier.copyAll(setup, rootFs, destDir, { InstallState.log("• $it") }, { cancelled })
+                        InstallState.log("Додаткових файлів скопійовано: $n")
                     }
                 } catch (e: InterruptedException) { throw e
                 } catch (e: Exception) {
-                    if (jobs.isEmpty()) throw e
-                    InstallState.log("ПОПЕРЕДЖЕННЯ: файли з контейнера інсталятора не розпаковано: ${e.message}")
+                    if (jobsIn.isEmpty()) throw e
+                    InstallState.log("ПОПЕРЕДЖЕННЯ: файли інсталятора не оброблено: ${e.message}")
                 }
             }
+
+            // архіви: потрібні локальні файли (з образів копіюємо в тимчасову папку)
+            val jobs = jobsIn.map { ArchiveJob(local(it.path).path, it.password) }
 
             // 1) підрахунок загального розміру
             val sizes = LongArray(jobs.size)

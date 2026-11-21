@@ -15,6 +15,9 @@ object ScriptScan {
     )
 
     private val unarc = Regex("""x\s+-o\+.*?-p"([^"]*)".*?"\{src\}\\([^"]+)"""")
+    private val srcFile = Regex(""""\{src\}\\([^"]+)"""")
+    private val pwd = Regex("""-p"([^"]*)"""")
+    private val srcOnly = Regex("""\{src\}\\(.+\.(?:bin|arc))""", RegexOption.IGNORE_CASE)
     private val api = Regex("""IS[A-Za-z]+Extract|ISDone[A-Za-z]*|SrepInit|PrecompInit""")
     private val toolNames = listOf("srep", "precomp", "packjpg", "xtool", "unrar", "7z", "zstd", "reflate")
     private val dirPrefixes = listOf("{code:", "{pf}", "{pf32}", "{pf64}", "{sd}")
@@ -34,8 +37,18 @@ object ScriptScan {
         val dirName = um.firstOrNull { m -> dirPrefixes.any { m.value.startsWith(it) } && m.value.contains('\\') }
             ?.let { exact(it).substringAfterLast('\\').trim() }.orEmpty().ifEmpty { title }
         val helpers = u.filter { it.startsWith("{tmp}\\") && it.lowercase().let { s -> listOf(".dll", ".exe", ".ini", ".inf").any(s::endsWith) } }.distinct().sorted()
-        val archives = a.mapNotNull { s -> unarc.find(s)?.let { Archive(it.groupValues[2], it.groupValues[1]) } }
+        val sc = a + u                            // рядки скрипту можуть бути і в ANSI, і в UTF-16
+        var archives = sc.mapNotNull { s -> unarc.find(s)?.let { Archive(it.groupValues[2].replace('\\', '/'), it.groupValues[1]) } }
             .distinctBy { it.file }
+        if (archives.isEmpty()) {
+            // запасний варіант: команда без пароля або шляхи до архівів окремими рядками
+            val cmd = sc.mapNotNull { s ->
+                if (!Regex("""\bx\s+-o\+""").containsMatchIn(s)) null
+                else srcFile.find(s)?.let { Archive(it.groupValues[1].replace('\\', '/'), pwd.find(s)?.groupValues?.get(1) ?: "") }
+            }
+            archives = (if (cmd.isNotEmpty()) cmd else
+                sc.mapNotNull { s -> srcOnly.matchEntire(s)?.let { Archive(it.groupValues[1].replace('\\', '/'), "") } }).distinctBy { it.file }
+        }
         return Info(
             setupId, title, dirName, helpers, archives,
             a.filter { api.matches(it) }.distinct().sorted(),

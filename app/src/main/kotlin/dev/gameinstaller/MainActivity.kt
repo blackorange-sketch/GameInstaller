@@ -23,6 +23,11 @@ import dev.gameinstaller.iso.IsoSet
 import dev.gameinstaller.inno.InnoHeader
 import dev.gameinstaller.inno.ScriptScan
 import dev.gameinstaller.install.InstallService
+import dev.gameinstaller.install.SourceFs
+import dev.gameinstaller.install.FolderFs
+import dev.gameinstaller.install.IsoFs
+import dev.gameinstaller.install.findInstallerExe
+import dev.gameinstaller.inno.ExternalCopier
 import dev.gameinstaller.install.InstallState
 import java.io.File
 import kotlin.concurrent.thread
@@ -43,7 +48,7 @@ class MainActivity : AppCompatActivity() {
 
     private var scan: ScriptScan.Info? = null
     private var srcDir: File? = null
-    private var setupFile: File? = null
+    private var setupRel: String? = null
     private var innoFileCount = 0
     private var isoList = listOf<File>()
     private var isoInner = ""
@@ -100,7 +105,7 @@ class MainActivity : AppCompatActivity() {
         fun button(t: String, onClick: () -> Unit) = Button(this).apply { text = t; setOnClickListener { onClick() } }
 
         root.addView(TextView(this).apply { text = "GameInstaller"; textSize = 22f })
-        root.addView(label("1. Папка з інсталятором (де лежить Setup.exe і Setup-*.bin)"))
+        root.addView(label("1. Папка з інсталятором (де лежить Setup.exe або start.exe)"))
         root.addView(button("Обрати папку інсталятора") { ensureAccessThen { pickSrc.launch(null) } })
         root.addView(button("Або: обрати образ(и) ISO (можна кілька дисків)") { ensureAccessThen { pickIso.launch(arrayOf("*/*")) } })
         srcInfo = TextView(this).apply { text = "Не обрано" }
@@ -171,90 +176,61 @@ class MainActivity : AppCompatActivity() {
 
     private class Analysis(
         val msg: String, val info: ScriptScan.Info, val paths: List<String>,
-        val pwds: List<String>, val setupExe: File, val innoCount: Int,
+        val pwds: List<String>, val setupRel: String, val innoCount: Int,
         val isos: List<File> = emptyList(), val inner: String = "",
     )
 
-    private fun analyze(dir: File): Analysis {
-        val setupExe = dir.listFiles()?.firstOrNull { it.name.equals("Setup.exe", true) }
-            ?: throw IllegalStateException("У папці немає Setup.exe")
-        val h = InnoHeader.load(setupExe.readBytes())
-        val info = ScriptScan.scan(h.setupId, h.header)
-        val inno = runCatching { InnoFiles.parse(h).appFiles() }.getOrDefault(emptyList())
-        require(info.archives.isNotEmpty() || inno.isNotEmpty()) {
-            "У цьому інсталяторі немає ні архівів FreeArc, ні файлів у контейнері Inno, які можна розпакувати."
-        }
-        val files = info.archives.map { File(dir, it.file) }
-        val missing = files.filter { !it.exists() }
-        require(missing.isEmpty()) { "Бракує файлів: " + missing.joinToString { it.name } }
-        val msg = buildString {
-            appendLine(info.title)
-            if (files.isNotEmpty()) {
-                appendLine("Архівів: ${files.size}, разом ${PathUtil.human(files.sumOf { it.length() })}")
-                files.forEach { appendLine("  ${it.name}  ${PathUtil.human(it.length())}") }
-            }
-            if (inno.isNotEmpty()) {
-                val total = inno.map { it.second }.distinctBy { it.slice to (it.offset to it.foffset) }.sumOf { it.size }
-                appendLine("Файлів у контейнері інсталятора: ${inno.size} (${PathUtil.human(total)})")
-            }
-            if (info.tools.any { it == "srep" || it == "precomp" })
-                append("Примітка: скрипт згадує srep/precomp; дрібні додаткові архіви з ними пропускаються.")
-        }
-        return Analysis(msg, info, files.map { it.path }, info.archives.map { it.password }, setupExe, inno.size)
-    }
+    private fun isInno(b: ByteArray) = runCatching { InnoHeader.load(b); true }.getOrDefault(false)
 
-    private fun analyzeIso(isoFiles: List<File>): Analysis {
-        val set = IsoSet(isoFiles.map { IsoImage(it) })
-        val setupEntry = set.findSetup() ?: throw IllegalStateException(
-            "В образах не знайдено Setup.exe. Файлів в образах: ${set.entries.size}" +
-                (if (set.entries.isEmpty()) "" else ". Перші: " + set.entries.values.take(8).joinToString { it.path }) +
-                (set.images.mapNotNull { it.udfNote }.firstOrNull()?.let { ". UDF: $it" } ?: ""))
-        val inner = setupEntry.dir
-        val h = InnoHeader.load(setupEntry.image.readAll(setupEntry))
+    /** Спільний аналіз для папки й образів: fs уже вказує на корінь, де лежить інсталятор (або над ним). */
+    private fun analyzeFs(fs: SourceFs, where: String, isoFiles: List<File>, inner: String): Analysis {
+        val setupRel = findInstallerExe(fs, ::isInno) ?: throw IllegalStateException(
+            "$where: не знайдено інсталятор Inno Setup (Setup.exe, start.exe або інший .exe у корені). Файли: " +
+                fs.find("", "*", false).take(10).joinToString())
+        val h = InnoHeader.load(fs.readBytes(setupRel))
         val info = ScriptScan.scan(h.setupId, h.header)
-        val inno = runCatching { InnoFiles.parse(h).appFiles() }.getOrDefault(emptyList())
-        require(info.archives.isNotEmpty() || inno.isNotEmpty()) {
-            "У цьому інсталяторі немає ні архівів FreeArc, ні файлів у контейнері Inno, які можна розпакувати."
+        val setup = runCatching { InnoFiles.parse(h) }.getOrNull()
+        val inno = setup?.appFiles().orEmpty()
+        val ext = setup?.let { ExternalCopier.plan(it) }.orEmpty()
+        require(info.archives.isNotEmpty() || inno.isNotEmpty() || ext.isNotEmpty()) {
+            "У цьому інсталяторі ($setupRel) немає ні архівів FreeArc, ні файлів, які можна розпакувати."
         }
-        val prefix = if (inner.isEmpty()) "" else "$inner/"
-        val found = info.archives.map { it to set.entries[(prefix + it.file).lowercase()] }
-        val missing = found.filter { it.second == null }
-        require(missing.isEmpty()) { "В образах бракує файлів: " + missing.joinToString { it.first.file } + ". Додайте другий образ?" }
-        val needed = set.neededIn(inner)
+        val missing = info.archives.filter { !fs.exists(it.file) }
+        require(missing.isEmpty()) { "Бракує файлів: " + missing.joinToString { it.file } + if (isoFiles.isNotEmpty()) ". Додайте інший образ?" else "" }
         val msg = buildString {
             appendLine(info.title)
-            appendLine("Образів: ${isoFiles.size} (" + isoFiles.joinToString { it.name } + ")")
-            appendLine("Копіюватиметься тимчасово: ${PathUtil.human(needed.sumOf { it.size })}")
-            found.forEach { appendLine("  ${it.first.file}  ${PathUtil.human(it.second!!.size)}") }
+            appendLine("Інсталятор: $setupRel")
+            if (isoFiles.isNotEmpty()) appendLine("Образів: ${isoFiles.size} (" + isoFiles.joinToString { it.name } + "); архіви тимчасово копіюються на пристрій")
+            if (info.archives.isNotEmpty()) {
+                appendLine("Архівів: ${info.archives.size}, разом ${PathUtil.human(info.archives.sumOf { fs.size(it.file) })}")
+                info.archives.forEach { appendLine("  ${it.file}  ${PathUtil.human(fs.size(it.file))}") }
+            }
             if (inno.isNotEmpty()) appendLine("Файлів у контейнері інсталятора: ${inno.size}")
+            if (ext.isNotEmpty()) appendLine("Додаткових файлів з диска: ${ext.size} записів")
             if (info.tools.any { it == "srep" || it == "precomp" })
                 append("Примітка: скрипт згадує srep/precomp; дрібні додаткові архіви з ними пропускаються.")
         }
         return Analysis(msg, info, info.archives.map { it.file }, info.archives.map { it.password },
-            File(setupEntry.name), inno.size, isoFiles, inner)
+            setupRel, inno.size + ext.size, isoFiles, inner)
     }
 
-    private fun analyzeSource(dir: File?, isoFiles: List<File> = emptyList()) {
-        srcInfo.text = "Аналізую…"
-        thread {
-            val r = try {
-                if (isoFiles.isNotEmpty()) analyzeIso(isoFiles) else analyze(dir!!)
-            } catch (e: Exception) {
-                runOnUiThread { srcInfo.text = "Помилка: ${e.message}"; scan = null; jobsPaths = emptyList(); innoFileCount = 0; refresh() }
-                return@thread
-            }
-            runOnUiThread {
-                srcInfo.text = r.msg
-                scan = r.info; srcDir = dir; setupFile = r.setupExe; isoList = r.isos; isoInner = r.inner; jobsPaths = r.paths; jobsPwds = r.pwds; innoFileCount = r.innoCount
-                if (nameEdit.text.isBlank()) nameEdit.setText(PathUtil.sanitizeDirName(r.info.defaultDirName))
-                refresh()
-            }
+    private fun analyze(dir: File) = analyzeFs(FolderFs(dir), "У папці", emptyList(), "")
+
+    private fun analyzeIso(isoFiles: List<File>): Analysis {
+        val set = IsoSet(isoFiles.map { IsoImage(it) })
+        // інсталятор шукаємо в корені образів, а якщо його там немає, у підпапках першого рівня
+        val roots = listOf("") + set.entries.values.map { it.dir.substringBefore('/') }.filter { it.isNotEmpty() }.distinct()
+        var firstErr: Exception? = null
+        for (r in roots) {
+            try { return analyzeFs(IsoFs(set, r), "В образах", isoFiles, r) } catch (e: Exception) { if (firstErr == null) firstErr = e }
         }
+        val udf = set.images.mapNotNull { it.udfNote }.firstOrNull()?.let { ". UDF: $it" } ?: ""
+        throw IllegalStateException((firstErr?.message ?: "порожні образи") + udf)
     }
 
     private fun startInstall() {
         val d = currentDest() ?: return
-        InstallService.start(this, jobsPaths, jobsPwds, d.path, setupFile?.path,
+        InstallService.start(this, jobsPaths, jobsPwds, d.path, setupRel, srcDir?.path,
             isoList.map { it.path }.ifEmpty { null }, isoInner)
     }
 }
