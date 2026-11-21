@@ -74,12 +74,15 @@ class Installer(private val ctx: Context) {
                 var inArc = 0L
                 InstallState.update(phase = "Розпаковую $name (${i + 1}/${jobs.size})…")
                 val code = run(listOf("x", "-o+", "-p${j.password}", "-w${ctx.cacheDir.path}", "-dp${destDir.path}", j.path)) { line ->
-                    extracting.find(line)?.let {
-                        inArc += it.groupValues[2].toLong()
+                    val m = extracting.find(line)
+                    if (m != null) {
+                        inArc += m.groupValues[2].toLong()
                         val pct = if (grand > 0) ((doneBefore + inArc) * 100 / grand).toInt().coerceIn(0, 99) else 0
-                        InstallState.log(it.groupValues[1])
+                        InstallState.log(m.groupValues[1])
                         InstallState.update(percent = pct)
-                    } ?: if (line.startsWith("ERROR") || line.contains("failed", true)) InstallState.log(line)
+                    } else if (line.startsWith("ERROR") || line.contains("failed", true)) {
+                        InstallState.log(line)
+                    }
                 }
                 if (cancelled) throw InterruptedException()
                 require(code == 0) { "Помилка розпаковки $name (код $code). Дивіться журнал." }

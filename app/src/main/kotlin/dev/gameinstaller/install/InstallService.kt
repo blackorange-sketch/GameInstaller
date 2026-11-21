@@ -26,8 +26,8 @@ class InstallService : Service() {
             return START_NOT_STICKY
         }
         val paths = intent?.getStringArrayExtra(EXTRA_ARCHIVES) ?: return START_NOT_STICKY
-        val pwds = intent.getStringArrayExtra(EXTRA_PASSWORDS) ?: return START_NOT_STICKY
-        val dest = intent.getStringExtra(EXTRA_DEST) ?: return START_NOT_STICKY
+        val pwds = intent?.getStringArrayExtra(EXTRA_PASSWORDS) ?: return START_NOT_STICKY
+        val dest = intent?.getStringExtra(EXTRA_DEST) ?: return START_NOT_STICKY
         if (installer != null) return START_NOT_STICKY
 
         startForeground(NOTIF_ID, notification("Встановлення…", 0))

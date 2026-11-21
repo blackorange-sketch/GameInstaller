@@ -136,7 +136,7 @@ class MainActivity : AppCompatActivity() {
     private fun analyzeSource(dir: File) {
         srcInfo.text = "Аналізую…"
         thread {
-            val msg: String
+            var msg = ""
             var info: ScriptScan.Info? = null
             var paths = listOf<String>()
             var pwds = listOf<String>()

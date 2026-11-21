@@ -17,7 +17,7 @@ android {
     }
     // libunarc.so це виконуваний файл unarc (збирається в CI через NDK і кладеться в jniLibs).
     // Щоб він з'явився в nativeLibraryDir і міг запускатися, бібліотеки мають розпаковуватися.
-    packaging { jniLibs { useLegacyPackaging = true } }
+    packaging { jniLibs { useLegacyPackaging = true; keepDebugSymbols += "**/libunarc.so" } }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
