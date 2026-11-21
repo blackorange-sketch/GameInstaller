@@ -69,6 +69,14 @@ class MainActivity : AppCompatActivity() {
             else analyzeSource(null, paths.map { File(it) })
         }
     }
+    private val pickIsoExtract = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        if (uris.isEmpty()) return@registerForActivityResult
+        val paths = uris.mapNotNull { PathUtil.docUriToPath(it) }
+        val d = currentDest()
+        if (paths.size != uris.size) toast("Не вдалося визначити шлях до образу. Оберіть файл із пам'яті пристрою")
+        else if (d == null) toast("Спочатку оберіть папку призначення й назву папки (крок 2)")
+        else InstallService.extractIsos(this, paths, d.path)
+    }
     private val notifPerm = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
 
     private val listener: (InstallState.Snapshot) -> Unit = { s ->
@@ -127,6 +135,10 @@ class MainActivity : AppCompatActivity() {
         }
         root.addView(nameEdit)
 
+        root.addView(button("Розпакувати образи ISO в папку (для запуску в Winlator)") {
+            if (destParent == null || nameEdit.text.isBlank()) toast("Спочатку оберіть папку призначення й назву папки (крок 2)")
+            else ensureAccessThen { pickIsoExtract.launch(arrayOf("*/*")) }
+        })
         installBtn = button("Встановити") { startInstall() }.apply { isEnabled = false }
         root.addView(installBtn)
         cancelBtn = button("Скасувати") { InstallService.cancel(this) }.apply { visibility = View.GONE }

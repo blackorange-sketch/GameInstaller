@@ -25,6 +25,7 @@ class InstallService : Service() {
             installer?.cancel()
             return START_NOT_STICKY
         }
+        if (intent?.getBooleanExtra(EXTRA_EXTRACT_ISO, false) == true) return extractIso(intent)
         val paths = intent?.getStringArrayExtra(EXTRA_ARCHIVES) ?: return START_NOT_STICKY
         val pwds = intent?.getStringArrayExtra(EXTRA_PASSWORDS) ?: return START_NOT_STICKY
         val dest = intent?.getStringExtra(EXTRA_DEST) ?: return START_NOT_STICKY
@@ -60,6 +61,33 @@ class InstallService : Service() {
         return START_NOT_STICKY
     }
 
+    private fun extractIso(intent: Intent): Int {
+        val isos = intent.getStringArrayExtra(EXTRA_ISOS) ?: return START_NOT_STICKY
+        val dest = intent.getStringExtra(EXTRA_DEST) ?: return START_NOT_STICKY
+        if (installer != null) return START_NOT_STICKY
+        startForeground(NOTIF_ID, notification("Копіювання образів…", 0))
+        wake = (getSystemService(Context.POWER_SERVICE) as PowerManager)
+            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "gameinstaller:iso").apply { acquire(6 * 60 * 60 * 1000L) }
+        val inst = Installer(this)
+        installer = inst
+        val listener: (InstallState.Snapshot) -> Unit = { s ->
+            getSystemService(NotificationManager::class.java).notify(NOTIF_ID, notification(s.phase.ifEmpty { "Копіювання…" }, s.percent))
+        }
+        InstallState.addListener(listener)
+        thread(name = "iso-extract") {
+            inst.extractIsos(isos.map { File(it) }, File(dest))
+            InstallState.removeListener(listener)
+            installer = null
+            wake?.release()
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            val s = InstallState.snap
+            getSystemService(NotificationManager::class.java)
+                .notify(NOTIF_ID + 1, notification(if (s.error == null) "Образи скопійовано" else "Помилка: ${s.error}", if (s.error == null) 100 else -1, ongoing = false))
+            stopSelf()
+        }
+        return START_NOT_STICKY
+    }
+
     private fun notification(text: String, percent: Int, ongoing: Boolean = true): Notification {
         val nm = getSystemService(NotificationManager::class.java)
         if (nm.getNotificationChannel(CHANNEL) == null) {
@@ -81,6 +109,7 @@ class InstallService : Service() {
         const val EXTRA_DEST = "dest"
         const val EXTRA_SETUP = "setup"
         const val EXTRA_SRC = "src"
+        const val EXTRA_EXTRACT_ISO = "extract_iso"
         const val EXTRA_ISOS = "isos"
         const val EXTRA_INNER = "inner"
         const val ACTION_CANCEL = "dev.gameinstaller.CANCEL"
@@ -96,6 +125,14 @@ class InstallService : Service() {
                 .putExtra(EXTRA_SRC, srcDir)
                 .putExtra(EXTRA_ISOS, isos?.toTypedArray())
                 .putExtra(EXTRA_INNER, inner)
+            ContextCompat.startForegroundService(ctx, i)
+        }
+
+        fun extractIsos(ctx: Context, isos: List<String>, dest: String) {
+            val i = Intent(ctx, InstallService::class.java)
+                .putExtra(EXTRA_EXTRACT_ISO, true)
+                .putExtra(EXTRA_ISOS, isos.toTypedArray())
+                .putExtra(EXTRA_DEST, dest)
             ContextCompat.startForegroundService(ctx, i)
         }
 

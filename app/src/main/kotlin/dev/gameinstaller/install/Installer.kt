@@ -183,4 +183,38 @@ class Installer(private val ctx: Context) {
             stage?.deleteRecursively()
         }
     }
+
+    /** Копіює весь вміст образів у одну папку (як на справжньому диску), щоб запустити інсталятор у Winlator. */
+    fun extractIsos(isos: List<File>, destDir: File) {
+        InstallState.reset()
+        InstallState.update(running = true, phase = "Підготовка…", percent = 0)
+        try {
+            destDir.mkdirs()
+            require(destDir.isDirectory && destDir.canWrite()) { "Немає доступу на запис у ${destDir.path}" }
+            val set = dev.gameinstaller.iso.IsoSet(isos.map { dev.gameinstaller.iso.IsoImage(it) })
+            val all = set.entries.values.toList()
+            require(all.isNotEmpty()) { "В образах немає файлів" }
+            val total = all.sumOf { it.size }.coerceAtLeast(1)
+            require(StatFs(destDir.path).availableBytes > total) { "Мало місця: потрібно ${PathUtil.human(total)}" }
+            var copied = 0L
+            for (e in all) {
+                if (cancelled) throw InterruptedException()
+                val out = File(destDir, e.path)
+                require(out.canonicalPath.startsWith(destDir.canonicalPath)) { "Небезпечний шлях: ${e.path}" }
+                InstallState.update(phase = "Копіюю: ${e.name}")
+                InstallState.log(e.path)
+                e.image.copyTo(e, out, { cancelled }) { n ->
+                    copied += n
+                    InstallState.update(percent = (copied * 100 / total).toInt().coerceIn(0, 99))
+                }
+            }
+            InstallState.log("Скопійовано файлів: ${all.size}")
+            InstallState.update(running = false, phase = "Готово", percent = 100, finished = true)
+        } catch (e: InterruptedException) {
+            InstallState.update(running = false, phase = "Скасовано", error = "Скасовано користувачем")
+        } catch (e: Exception) {
+            InstallState.log("ПОМИЛКА: ${e.message}")
+            InstallState.update(running = false, phase = "Помилка", error = e.message ?: e.toString())
+        }
+    }
 }
