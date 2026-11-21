@@ -49,7 +49,7 @@ class Installer(private val ctx: Context) {
         val ini = File(ctx.cacheDir, "arc.ini")
         ini.writeText(
             "[External compressor:srep]\n" +
-            "unpackcmd = ${srep.path} -d \$\$arcpackedfile\$\$.tmp \$\$arcdatafile\$\$.tmp\n" +
+            "unpackcmd = ${srep.path} -d '\$\$arcpackedfile\$\$.tmp' '\$\$arcdatafile\$\$.tmp'\n" +
             "datafile = \$\$arcdatafile\$\$.tmp\n" +
             "packedfile = \$\$arcpackedfile\$\$.tmp\n"
         )
