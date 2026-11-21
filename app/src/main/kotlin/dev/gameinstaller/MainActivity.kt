@@ -267,7 +267,8 @@ class MainActivity : AppCompatActivity() {
         val subs = set.entries.values.map { it.dir.substringBefore('/') }.filter { it.isNotEmpty() }.distinct().sorted()
         val (c, rep) = candidates(listOf("") + subs, { d -> IsoFs(set, d) }, null)
         val udf = set.images.mapNotNull { it.udfNote }.firstOrNull()?.let { ". UDF: $it" } ?: ""
-        if (c.isEmpty()) throw IllegalStateException("В образах інсталятор Inno Setup не знайдено. $rep$udf")
+        if (c.isEmpty()) throw IllegalStateException("В образах інсталятор Inno Setup не знайдено. $rep. Усього файлів в образах: ${set.entries.size}; exe: " +
+            set.entries.values.filter { it.name.endsWith(".exe", true) }.take(10).joinToString { it.path + " " + (it.size shr 10) + "КБ" } + udf)
         return c
     }
 

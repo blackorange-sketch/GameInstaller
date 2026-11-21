@@ -115,7 +115,11 @@ fun findInstallerExes(fs: SourceFs, check: (ByteArray) -> String?): InstallerSea
         val err = try { check(fs.readBytes(name)) } catch (e: Throwable) { "читання: ${e.message}" }
         if (err == null) ok.add(name) else rep.append("$name (${size shr 10} КБ): $err; ")
     }
-    if (exes.isEmpty()) rep.append("жодного .exe")
+    if (exes.isEmpty()) {
+        val all = fs.find("", "*", true)
+        rep.append("жодного .exe у цій папці; файлів усього ${all.size}")
+        if (all.isNotEmpty()) rep.append(": ").append(all.take(12).joinToString())
+    }
     return InstallerSearch(ok, rep.toString())
 }
 
