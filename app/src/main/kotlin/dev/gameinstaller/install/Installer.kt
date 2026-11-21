@@ -4,6 +4,8 @@ import android.content.Context
 import android.os.StatFs
 import dev.gameinstaller.PathUtil
 import dev.gameinstaller.inno.InnoExtractor
+import dev.gameinstaller.iso.IsoImage
+import dev.gameinstaller.iso.IsoSet
 import dev.gameinstaller.inno.InnoFiles
 import dev.gameinstaller.inno.InnoHeader
 import java.io.BufferedReader
@@ -11,6 +13,9 @@ import java.io.File
 import java.io.InputStreamReader
 
 class ArchiveJob(val path: String, val password: String)
+
+/** Джерело з образів ISO: innerDir папка зі Setup.exe всередині образів. Імена в ArchiveJob тоді відносні. */
+class IsoSource(val isos: List<File>, val innerDir: String)
 
 /** Запускає unarc (libunarc.so із nativeLibraryDir) для кожного архіву по черзі. */
 class Installer(private val ctx: Context) {
@@ -46,12 +51,39 @@ class Installer(private val ctx: Context) {
         return code
     }
 
-    fun install(jobs: List<ArchiveJob>, destDir: File, setupExe: File? = null) {
+    fun install(jobsIn: List<ArchiveJob>, destDir: File, setupExeIn: File? = null, iso: IsoSource? = null) {
+        var stage: File? = null
         InstallState.reset()
         InstallState.update(running = true, phase = "Підготовка…", percent = 0)
         try {
             destDir.mkdirs()
             require(destDir.isDirectory && destDir.canWrite()) { "Немає доступу на запис у ${destDir.path}" }
+
+            // -1) якщо джерело це образи ISO: копіюємо потрібні файли в тимчасову папку поруч із папкою гри
+            var jobs = jobsIn
+            var setupExe = setupExeIn
+            if (iso != null) {
+                val set = IsoSet(iso.isos.map { IsoImage(it) })
+                val needed = set.neededIn(iso.innerDir)
+                require(needed.isNotEmpty()) { "В образах не знайдено файлів інсталятора" }
+                val st = File(destDir.parentFile ?: destDir, ".gameinstaller_stage")
+                stage = st
+                st.deleteRecursively(); st.mkdirs()
+                val total = needed.sumOf { it.size }
+                require(StatFs(st.path).availableBytes > total) { "Мало місця для тимчасових файлів з образів: потрібно ${PathUtil.human(total)}" }
+                var copied = 0L
+                for (e in needed) {
+                    InstallState.update(phase = "Копіюю з образу: ${e.name}")
+                    InstallState.log("ISO → ${e.name} (${PathUtil.human(e.size)})")
+                    e.image.copyTo(e, File(st, e.name), { cancelled }) { n ->
+                        copied += n
+                        InstallState.update(percent = if (total > 0) (copied * 100 / total).toInt().coerceIn(0, 99) else 0)
+                    }
+                }
+                jobs = jobsIn.map { ArchiveJob(File(st, it.path).path, it.password) }
+                setupExe = setupExeIn?.let { File(st, it.name) }
+                InstallState.update(percent = 0)
+            }
 
             // 0) файли, що лежать у самому контейнері Inno (Setup-1a.bin): ставимо першими, архіви потім перезапишуть однакові
             var innoBytes = 0L
@@ -140,6 +172,8 @@ class Installer(private val ctx: Context) {
         } catch (e: Exception) {
             InstallState.log("ПОМИЛКА: ${e.message}")
             InstallState.update(running = false, phase = "Помилка", error = e.message ?: e.toString())
+        } finally {
+            stage?.deleteRecursively()
         }
     }
 }

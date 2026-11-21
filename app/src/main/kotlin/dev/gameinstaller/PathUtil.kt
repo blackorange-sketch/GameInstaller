@@ -16,6 +16,23 @@ object PathUtil {
         null
     }
 
+    /** content://...document/primary%3ADownload%2Fgame.iso -> /storage/emulated/0/Download/game.iso */
+    fun docUriToPath(uri: Uri): String? = try {
+        val docId = DocumentsContract.getDocumentId(uri)
+        when {
+            docId.startsWith("raw:") -> docId.removePrefix("raw:")
+            ':' in docId -> {
+                val vol = docId.substringBefore(':')
+                val rel = docId.substringAfter(':')
+                val base = if (vol == "primary") Environment.getExternalStorageDirectory().path else "/storage/$vol"
+                "$base/$rel"
+            }
+            else -> null
+        }
+    } catch (_: Exception) {
+        null
+    }
+
     fun sanitizeDirName(s: String): String =
         s.replace(Regex("""[\\/:*?"<>|]"""), "_").trim().trim('.').ifEmpty { "Game" }
 

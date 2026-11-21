@@ -18,6 +18,8 @@ import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import dev.gameinstaller.inno.InnoFiles
+import dev.gameinstaller.iso.IsoImage
+import dev.gameinstaller.iso.IsoSet
 import dev.gameinstaller.inno.InnoHeader
 import dev.gameinstaller.inno.ScriptScan
 import dev.gameinstaller.install.InstallService
@@ -43,6 +45,8 @@ class MainActivity : AppCompatActivity() {
     private var srcDir: File? = null
     private var setupFile: File? = null
     private var innoFileCount = 0
+    private var isoList = listOf<File>()
+    private var isoInner = ""
     private var jobsPaths = listOf<String>()
     private var jobsPwds = listOf<String>()
     private var destParent: String? = null
@@ -52,6 +56,13 @@ class MainActivity : AppCompatActivity() {
     }
     private val pickDest = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri != null) PathUtil.treeUriToPath(uri)?.let { destParent = it; refresh() } ?: toast("Не вдалося визначити шлях")
+    }
+    private val pickIso = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        if (uris.isNotEmpty()) {
+            val paths = uris.mapNotNull { PathUtil.docUriToPath(it) }
+            if (paths.size != uris.size) toast("Не вдалося визначити шлях до образу. Оберіть файл із пам'яті пристрою (Завантаження, SD)")
+            else analyzeSource(null, paths.map { File(it) })
+        }
     }
     private val notifPerm = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
 
@@ -91,6 +102,7 @@ class MainActivity : AppCompatActivity() {
         root.addView(TextView(this).apply { text = "GameInstaller"; textSize = 22f })
         root.addView(label("1. Папка з інсталятором (де лежить Setup.exe і Setup-*.bin)"))
         root.addView(button("Обрати папку інсталятора") { ensureAccessThen { pickSrc.launch(null) } })
+        root.addView(button("Або: обрати образ(и) ISO (можна кілька дисків)") { ensureAccessThen { pickIso.launch(arrayOf("*/*")) } })
         srcInfo = TextView(this).apply { text = "Не обрано" }
         root.addView(srcInfo)
 
@@ -160,6 +172,7 @@ class MainActivity : AppCompatActivity() {
     private class Analysis(
         val msg: String, val info: ScriptScan.Info, val paths: List<String>,
         val pwds: List<String>, val setupExe: File, val innoCount: Int,
+        val isos: List<File> = emptyList(), val inner: String = "",
     )
 
     private fun analyze(dir: File): Analysis {
@@ -190,18 +203,46 @@ class MainActivity : AppCompatActivity() {
         return Analysis(msg, info, files.map { it.path }, info.archives.map { it.password }, setupExe, inno.size)
     }
 
-    private fun analyzeSource(dir: File) {
+    private fun analyzeIso(isoFiles: List<File>): Analysis {
+        val set = IsoSet(isoFiles.map { IsoImage(it) })
+        val setupEntry = set.findSetup() ?: throw IllegalStateException("В образах не знайдено Setup.exe")
+        val inner = setupEntry.dir
+        val h = InnoHeader.load(setupEntry.image.readAll(setupEntry))
+        val info = ScriptScan.scan(h.setupId, h.header)
+        val inno = runCatching { InnoFiles.parse(h).appFiles() }.getOrDefault(emptyList())
+        require(info.archives.isNotEmpty() || inno.isNotEmpty()) {
+            "У цьому інсталяторі немає ні архівів FreeArc, ні файлів у контейнері Inno, які можна розпакувати."
+        }
+        val prefix = if (inner.isEmpty()) "" else "$inner/"
+        val found = info.archives.map { it to set.entries[(prefix + it.file).lowercase()] }
+        val missing = found.filter { it.second == null }
+        require(missing.isEmpty()) { "В образах бракує файлів: " + missing.joinToString { it.first.file } + ". Додайте другий образ?" }
+        val needed = set.neededIn(inner)
+        val msg = buildString {
+            appendLine(info.title)
+            appendLine("Образів: ${isoFiles.size} (" + isoFiles.joinToString { it.name } + ")")
+            appendLine("Копіюватиметься тимчасово: ${PathUtil.human(needed.sumOf { it.size })}")
+            found.forEach { appendLine("  ${it.first.file}  ${PathUtil.human(it.second!!.size)}") }
+            if (inno.isNotEmpty()) appendLine("Файлів у контейнері інсталятора: ${inno.size}")
+            if (info.tools.any { it == "srep" || it == "precomp" })
+                append("Примітка: скрипт згадує srep/precomp; дрібні додаткові архіви з ними пропускаються.")
+        }
+        return Analysis(msg, info, info.archives.map { it.file }, info.archives.map { it.password },
+            File(setupEntry.name), inno.size, isoFiles, inner)
+    }
+
+    private fun analyzeSource(dir: File?, isoFiles: List<File> = emptyList()) {
         srcInfo.text = "Аналізую…"
         thread {
             val r = try {
-                analyze(dir)
+                if (isoFiles.isNotEmpty()) analyzeIso(isoFiles) else analyze(dir!!)
             } catch (e: Exception) {
                 runOnUiThread { srcInfo.text = "Помилка: ${e.message}"; scan = null; jobsPaths = emptyList(); innoFileCount = 0; refresh() }
                 return@thread
             }
             runOnUiThread {
                 srcInfo.text = r.msg
-                scan = r.info; srcDir = dir; setupFile = r.setupExe; jobsPaths = r.paths; jobsPwds = r.pwds; innoFileCount = r.innoCount
+                scan = r.info; srcDir = dir; setupFile = r.setupExe; isoList = r.isos; isoInner = r.inner; jobsPaths = r.paths; jobsPwds = r.pwds; innoFileCount = r.innoCount
                 if (nameEdit.text.isBlank()) nameEdit.setText(PathUtil.sanitizeDirName(r.info.defaultDirName))
                 refresh()
             }
@@ -210,6 +251,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun startInstall() {
         val d = currentDest() ?: return
-        InstallService.start(this, jobsPaths, jobsPwds, d.path, setupFile?.path)
+        InstallService.start(this, jobsPaths, jobsPwds, d.path, setupFile?.path,
+            isoList.map { it.path }.ifEmpty { null }, isoInner)
     }
 }

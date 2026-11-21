@@ -29,6 +29,8 @@ class InstallService : Service() {
         val pwds = intent?.getStringArrayExtra(EXTRA_PASSWORDS) ?: return START_NOT_STICKY
         val dest = intent?.getStringExtra(EXTRA_DEST) ?: return START_NOT_STICKY
         val setupExe = intent?.getStringExtra(EXTRA_SETUP)?.let { File(it) }
+        val isos = intent?.getStringArrayExtra(EXTRA_ISOS)
+        val iso = if (isos != null && isos.isNotEmpty()) IsoSource(isos.map { File(it) }, intent.getStringExtra(EXTRA_INNER) ?: "") else null
         if (installer != null) return START_NOT_STICKY
 
         startForeground(NOTIF_ID, notification("Встановлення…", 0))
@@ -43,7 +45,7 @@ class InstallService : Service() {
         }
         InstallState.addListener(listener)
         thread(name = "installer") {
-            inst.install(paths.indices.map { ArchiveJob(paths[it], pwds[it]) }, File(dest), setupExe)
+            inst.install(paths.indices.map { ArchiveJob(paths[it], pwds[it]) }, File(dest), setupExe, iso)
             InstallState.removeListener(listener)
             installer = null
             wake?.release()
@@ -76,16 +78,20 @@ class InstallService : Service() {
         const val EXTRA_PASSWORDS = "passwords"
         const val EXTRA_DEST = "dest"
         const val EXTRA_SETUP = "setup"
+        const val EXTRA_ISOS = "isos"
+        const val EXTRA_INNER = "inner"
         const val ACTION_CANCEL = "dev.gameinstaller.CANCEL"
         private const val CHANNEL = "install"
         private const val NOTIF_ID = 1
 
-        fun start(ctx: Context, archives: List<String>, passwords: List<String>, dest: String, setupExe: String?) {
+        fun start(ctx: Context, archives: List<String>, passwords: List<String>, dest: String, setupExe: String?, isos: List<String>? = null, inner: String = "") {
             val i = Intent(ctx, InstallService::class.java)
                 .putExtra(EXTRA_ARCHIVES, archives.toTypedArray())
                 .putExtra(EXTRA_PASSWORDS, passwords.toTypedArray())
                 .putExtra(EXTRA_DEST, dest)
                 .putExtra(EXTRA_SETUP, setupExe)
+                .putExtra(EXTRA_ISOS, isos?.toTypedArray())
+                .putExtra(EXTRA_INNER, inner)
             ContextCompat.startForegroundService(ctx, i)
         }
 
