@@ -112,7 +112,26 @@ class Installer(private val ctx: Context) {
             }
 
             // архіви: потрібні локальні файли (з образів копіюємо в тимчасову папку)
-            val jobs = jobsIn.map { ArchiveJob(local(it.path).path, it.password) }
+            var jobs = jobsIn.map { ArchiveJob(local(it.path).path, it.password) }
+
+            // пароль не знайдено в командному рядку скрипта: підбираємо серед рядків скрипта на найменшому архіві
+            if (jobs.isNotEmpty() && jobs.any { it.password.isEmpty() } && setupRel != null) {
+                InstallState.update(phase = "Шукаю пароль архівів…")
+                val h = InnoHeader.load(fs.readBytes(setupRel))
+                val cands = dev.gameinstaller.inno.ScriptScan.scan(h.setupId, h.header).pwCandidates
+                val probe = jobs.minByOrNull { File(it.path).length() }!!
+                var good: String? = null
+                if (run(listOf("v", probe.path)) { } == 0) good = ""
+                var tries = 0
+                if (good == null) for (c in cands) {
+                    if (cancelled) throw InterruptedException()
+                    tries++
+                    if (run(listOf("v", "-p$c", probe.path)) { } == 0) { good = c; break }
+                }
+                require(good != null) { "Не вдалося підібрати пароль до ${File(probe.path).name} (перевірено $tries рядків скрипта)." }
+                InstallState.log("Пароль архівів підібрано (перевірено рядків: $tries)")
+                jobs = jobs.map { ArchiveJob(it.path, if (it.password.isEmpty()) good!! else it.password) }
+            }
 
             // 1) підрахунок загального розміру
             val sizes = LongArray(jobs.size)

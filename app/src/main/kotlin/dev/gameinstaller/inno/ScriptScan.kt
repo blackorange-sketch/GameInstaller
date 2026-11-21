@@ -12,6 +12,8 @@ object ScriptScan {
         val archives: List<Archive>,
         val isDoneApi: List<String>,
         val tools: List<String>,
+        /** Рядки зі скрипту, схожі на пароль (найближчі до записів dataN.bin першими); перевіряються на справжньому архіві. */
+        val pwCandidates: List<String> = emptyList(),
     )
 
     private val unarc = Regex("""x\s+-o\+.*?-p"([^"]*)".*?"\{src\}\\([^"]+)"""")
@@ -49,10 +51,44 @@ object ScriptScan {
             archives = (if (cmd.isNotEmpty()) cmd else
                 sc.mapNotNull { s -> srcOnly.matchEntire(s)?.let { Archive(it.groupValues[1].replace('\\', '/'), "") } }).distinctBy { it.file }
         }
+        // ANSI-інсталятори (Inno 5.x без "(u)"): рядки заголовка мають префікс довжини u32, 0-й це AppName, 10-й DefaultDirName
+        var title2 = title
+        var dirName2 = dirName
+        if (!setupId.contains("(u)", ignoreCase = true)) {
+            val strs = ansiStrings(hdr, 11)
+            strs.getOrNull(0)?.takeIf { it.isNotBlank() }?.let { title2 = it }
+            strs.getOrNull(10)?.substringAfterLast('\\')?.trim()?.takeIf { it.isNotEmpty() && !it.startsWith("{") }?.let { dirName2 = it }
+                ?: run { if (title2.isNotBlank()) dirName2 = title2 }
+        }
+        // кандидати пароля: друковані рядки без пробілів і службових символів, ближчі до першого {src}\*.bin йдуть першими
+        val aM = Regex("[ -~]{6,}").findAll(String(hdr, Charsets.ISO_8859_1)).toList()
+        val anchor = aM.firstOrNull { srcOnly.matchEntire(it.value) != null }?.range?.first ?: 0
+        val cand = LinkedHashSet<String>()
+        for (m in aM.sortedBy { Math.abs(it.range.first - anchor) }) {
+            val v = m.value
+            if (v.length !in 6..40 || v.any { it == '\\' || it == '{' || it == ' ' || it == '"' }) continue
+            cand.add(v); if (v.length >= 7) cand.add(v.drop(1))   // перший символ міг бути байтом довжини
+            if (cand.size > 4000) break
+        }
         return Info(
-            setupId, title, dirName, helpers, archives,
+            setupId, title2, dirName2, helpers, archives,
             a.filter { api.matches(it) }.distinct().sorted(),
             toolNames.filter { t -> a.any { t in it.lowercase() } },
+            cand.toList(),
         )
+    }
+
+    /** Перші [n] рядків заголовка ANSI-інсталятора: u32 довжина + байти. */
+    private fun ansiStrings(h: ByteArray, n: Int): List<String> {
+        val out = ArrayList<String>()
+        var p = 0
+        repeat(n) {
+            if (p + 4 > h.size) return out
+            val len = (h[p].toInt() and 255) or ((h[p + 1].toInt() and 255) shl 8) or ((h[p + 2].toInt() and 255) shl 16) or ((h[p + 3].toInt() and 255) shl 24)
+            if (len < 0 || p + 4 + len > h.size) return out
+            out.add(String(h, p + 4, len, Charsets.ISO_8859_1))
+            p += 4 + len
+        }
+        return out
     }
 }
