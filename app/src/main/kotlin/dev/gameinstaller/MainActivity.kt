@@ -205,7 +205,10 @@ class MainActivity : AppCompatActivity() {
 
     private fun analyzeIso(isoFiles: List<File>): Analysis {
         val set = IsoSet(isoFiles.map { IsoImage(it) })
-        val setupEntry = set.findSetup() ?: throw IllegalStateException("В образах не знайдено Setup.exe")
+        val setupEntry = set.findSetup() ?: throw IllegalStateException(
+            "В образах не знайдено Setup.exe. Файлів в образах: ${set.entries.size}" +
+                (if (set.entries.isEmpty()) "" else ". Перші: " + set.entries.values.take(8).joinToString { it.path }) +
+                (set.images.mapNotNull { it.udfNote }.firstOrNull()?.let { ". UDF: $it" } ?: ""))
         val inner = setupEntry.dir
         val h = InnoHeader.load(setupEntry.image.readAll(setupEntry))
         val info = ScriptScan.scan(h.setupId, h.header)
