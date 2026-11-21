@@ -107,7 +107,6 @@ class Installer(private val ctx: Context) {
             val internalFree = try { StatFs(ctx.cacheDir.path).availableBytes } catch (_: Exception) { 0L }
             val tmpD = (if (internalFree > 10L shl 30) File(ctx.cacheDir, "gi_tmp") else File(destDir.parentFile ?: destDir, ".gameinstaller_tmp"))
                 .also { it.mkdirs() }
-            InstallState.log("Тимчасові файли: ${tmpD.path}")
             tmpDir = if (tmpD.isDirectory && tmpD.canWrite()) tmpD else null
             cleanTemp(tmpD)
 
@@ -206,6 +205,21 @@ class Installer(private val ctx: Context) {
                 "Мало місця: потрібно ${PathUtil.human(grand)}, вільно ${PathUtil.human(free)}"
             }
             InstallState.log("Усього розпакувати: ${PathUtil.human(grand)}")
+            // srep через тимчасові файли: потрібне місце ≈ розпакований розмір найбільшого архіву ×1,3
+            val tmpNeed = (sizes.maxOrNull() ?: 0L) * 13 / 10
+            val intFree = try { StatFs(ctx.cacheDir.path).availableBytes } catch (_: Exception) { 0L }
+            val extDir = File(destDir.parentFile ?: destDir, ".gameinstaller_tmp")
+            val extFree = try { StatFs((destDir.parentFile ?: destDir).path).availableBytes } catch (_: Exception) { 0L }
+            val newTmp = when {
+                intFree > tmpNeed -> File(ctx.cacheDir, "gi_tmp")
+                extFree > grand + tmpNeed -> extDir
+                else -> throw IllegalStateException(
+                    "Мало місця для тимчасових файлів srep: потрібно ще ≈${PathUtil.human(tmpNeed)} (у пам'яті застосунку вільно ${PathUtil.human(intFree)}, у сховищі після гри ${PathUtil.human((extFree - grand).coerceAtLeast(0))})")
+            }
+            newTmp.mkdirs()
+            tmpDir?.takeIf { it != newTmp }?.deleteRecursively()
+            tmpDir = newTmp
+            InstallState.log("Тимчасові файли: ${newTmp.path} (потрібно ≈${PathUtil.human(tmpNeed)})")
             InstallState.setArchives(jobs.map { File(it.path).name })
 
             // 2) розпаковка: до WORKERS архівів одночасно, найбільші першими
@@ -222,6 +236,7 @@ class Installer(private val ctx: Context) {
                     InstallState.log("▶ $name")
                     val t0 = System.currentTimeMillis()
                     var last = 0L
+                    val tail = java.util.ArrayDeque<String>()
                     val code = run(listOf("x", "-o+", "-p${j.password}", "-w${(tmpDir ?: ctx.cacheDir).path}", "-dp${destDir.path}", j.path), idleSec = 420) { line ->
                         val pm = written.find(line)
                         if (pm != null) {
@@ -232,12 +247,14 @@ class Installer(private val ctx: Context) {
                             InstallState.setArcPercent(i, if (sizes[i] > 0) (w * 100 / sizes[i]).toInt().coerceIn(0, 99) else 0)
                             InstallState.update(percent = pct)
                         } else {
+                            if (!line.startsWith("Extracting") && line.isNotBlank()) { tail.addLast(line); if (tail.size > 8) tail.removeFirst() }
                             val m = extracting.find(line)
                             if (m != null) InstallState.log(m.groupValues[1])
                             else if (line.startsWith("ERROR") || line.contains("failed", true)) InstallState.log(line)
                         }
                     }
                     if (!cancelled && code != 0) {
+                        tail.forEach { InstallState.log("[$name] $it") }
                         failure.compareAndSet(null, if (code == -2)
                             "Архів $name не відповідає понад 7 хвилин: найімовірніше, метод стиснення не підтримується. Дивіться рядок «метод …» у журналі."
                         else "Помилка розпаковки $name (код $code). Дивіться журнал.")
