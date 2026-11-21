@@ -63,6 +63,19 @@ class Installer(private val ctx: Context) {
         arcIni()?.let { pb.environment()["GI_ARC_INI"] = it.path }
         val p = pb.start()
         procs.add(p)
+        // Вимірюємо, скільки процесорного часу з'їв unarc (/proc/<pid>/stat): видно, чи він впирається в одне ядро
+        val pid = try { p.javaClass.getDeclaredField("pid").apply { isAccessible = true }.getInt(p) } catch (_: Throwable) { -1 }
+        val cpuTicks = java.util.concurrent.atomic.AtomicLong(0)
+        val startMs = System.currentTimeMillis()
+        val sampler = if (pid > 0) kotlin.concurrent.thread(isDaemon = true, name = "cpu-sampler") {
+            try {
+                while (true) {
+                    Thread.sleep(2000)
+                    val f = File("/proc/$pid/stat").readText().substringAfterLast(')').trim().split(' ')
+                    cpuTicks.set((f[11].toLongOrNull() ?: 0L) + (f[12].toLongOrNull() ?: 0L))
+                }
+            } catch (_: Throwable) { }
+        } else null
         val last = java.util.concurrent.atomic.AtomicLong(System.currentTimeMillis())
         val timedOut = java.util.concurrent.atomic.AtomicBoolean(false)
         val wd = if (idleSec > 0) kotlin.concurrent.thread(isDaemon = true, name = "unarc-watchdog") {
@@ -87,6 +100,9 @@ class Installer(private val ctx: Context) {
         }
         val code = p.waitFor()
         wd?.interrupt()
+        sampler?.interrupt()
+        val wallMs = (System.currentTimeMillis() - startMs).coerceAtLeast(1)
+        if (cpuTicks.get() > 0 && wallMs > 5000) onLine("@@CPU ${cpuTicks.get() * 10 * 100 / wallMs}")
         procs.remove(p)
         return if (timedOut.get()) -2 else code
     }
@@ -247,7 +263,8 @@ class Installer(private val ctx: Context) {
                             InstallState.setArcPercent(i, if (sizes[i] > 0) (w * 100 / sizes[i]).toInt().coerceIn(0, 99) else 0)
                             InstallState.update(percent = pct)
                         } else {
-                            if (!line.startsWith("Extracting") && line.isNotBlank()) { tail.addLast(line); if (tail.size > 8) tail.removeFirst() }
+                            if (line.startsWith("@@CPU ")) InstallState.log("[$name] CPU: ${line.removePrefix("@@CPU ")}% одного ядра")
+                            else if (!line.startsWith("Extracting") && line.isNotBlank()) { tail.addLast(line); if (tail.size > 8) tail.removeFirst() }
                             val m = extracting.find(line)
                             if (m != null) InstallState.log(m.groupValues[1])
                             else if (line.startsWith("ERROR") || line.contains("failed", true)) InstallState.log(line)
