@@ -98,7 +98,11 @@ class Installer(private val ctx: Context) {
             destDir.mkdirs()
             require(destDir.isDirectory && destDir.canWrite()) { "Немає доступу на запис у ${destDir.path}" }
             val stageDir = File(destDir.parentFile ?: destDir, ".gameinstaller_stage")
-            val tmpD = File(destDir.parentFile ?: destDir, ".gameinstaller_tmp").also { it.mkdirs() }
+            // Тимчасові файли srep/lzma: у внутрішній пам'яті (швидше, ніж /storage/emulated), якщо там є місце
+            val internalFree = try { StatFs(ctx.cacheDir.path).availableBytes } catch (_: Exception) { 0L }
+            val tmpD = (if (internalFree > 10L shl 30) File(ctx.cacheDir, "gi_tmp") else File(destDir.parentFile ?: destDir, ".gameinstaller_tmp"))
+                .also { it.mkdirs() }
+            InstallState.log("Тимчасові файли: ${tmpD.path}")
             tmpDir = if (tmpD.isDirectory && tmpD.canWrite()) tmpD else null
             cleanTemp(tmpD)
 
