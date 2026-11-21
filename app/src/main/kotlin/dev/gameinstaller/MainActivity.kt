@@ -32,6 +32,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var cancelBtn: Button
     private lateinit var progress: ProgressBar
     private lateinit var phase: TextView
+    private lateinit var overallText: TextView
+    private lateinit var arcBox: LinearLayout
+    private val arcViews = mutableListOf<Pair<TextView, ProgressBar>>()
     private lateinit var logView: TextView
     private lateinit var logScroll: ScrollView
 
@@ -52,6 +55,20 @@ class MainActivity : AppCompatActivity() {
     private val listener: (InstallState.Snapshot) -> Unit = { s ->
         phase.text = s.phase
         progress.progress = s.percent
+        overallText.text = if (s.running || s.finished) "Загалом: ${s.percent}%" else ""
+        if (arcViews.size != s.archives.size) {
+            arcBox.removeAllViews(); arcViews.clear()
+            s.archives.forEach { a ->
+                val t = TextView(this).apply { textSize = 12f }
+                val b = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply { max = 100 }
+                arcBox.addView(t); arcBox.addView(b)
+                arcViews.add(t to b)
+            }
+        }
+        s.archives.forEachIndexed { k, a ->
+            arcViews[k].first.text = "${a.name}: ${a.percent}%"
+            arcViews[k].second.progress = a.percent
+        }
         logView.text = s.log
         logScroll.post { logScroll.fullScroll(View.FOCUS_DOWN) }
         cancelBtn.visibility = if (s.running) View.VISIBLE else View.GONE
@@ -95,8 +112,12 @@ class MainActivity : AppCompatActivity() {
         cancelBtn = button("Скасувати") { InstallService.cancel(this) }.apply { visibility = View.GONE }
         root.addView(cancelBtn)
 
+        overallText = TextView(this).apply { textSize = 14f }
+        root.addView(overallText)
         progress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply { max = 100 }
         root.addView(progress)
+        arcBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, pad / 2, 0, pad / 2) }
+        root.addView(arcBox)
         phase = TextView(this)
         root.addView(phase)
         logView = TextView(this).apply { textSize = 11f; typeface = android.graphics.Typeface.MONOSPACE }

@@ -13,7 +13,10 @@ object InstallState {
         val log: String = "",
         val finished: Boolean = false,
         val error: String? = null,
+        val archives: List<Arc> = emptyList(),
     )
+
+    data class Arc(val name: String, val percent: Int = 0)
 
     @Volatile
     var snap = Snapshot()
@@ -36,10 +39,21 @@ object InstallState {
     fun update(
         running: Boolean = snap.running, phase: String = snap.phase, percent: Int = snap.percent,
         finished: Boolean = snap.finished, error: String? = snap.error,
+        archives: List<Arc> = snap.archives,
     ) {
-        snap = Snapshot(running, phase, percent, logLines.joinToString("\n"), finished, error)
+        snap = Snapshot(running, phase, percent, logLines.joinToString("\n"), finished, error, archives)
         val s = snap
         main.post { listeners.forEach { it(s) } }
+    }
+
+    @Synchronized
+    fun setArchives(names: List<String>) = update(archives = names.map { Arc(it) })
+
+    @Synchronized
+    fun setArcPercent(i: Int, pct: Int) {
+        val cur = snap.archives
+        if (i !in cur.indices || cur[i].percent == pct) return
+        update(archives = cur.mapIndexed { k, a -> if (k == i) a.copy(percent = pct) else a })
     }
 
     @Synchronized

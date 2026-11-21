@@ -68,6 +68,7 @@ class Installer(private val ctx: Context) {
                 "Мало місця: потрібно ${PathUtil.human(grand)}, вільно ${PathUtil.human(free)}"
             }
             InstallState.log("Усього розпакувати: ${PathUtil.human(grand)}")
+            InstallState.setArchives(jobs.map { File(it.path).name })
 
             // 2) розпаковка: до WORKERS архівів одночасно, найбільші першими
             val done = java.util.concurrent.atomic.AtomicLong(0)
@@ -81,11 +82,14 @@ class Installer(private val ctx: Context) {
                     val j = jobs[i]
                     val name = File(j.path).name
                     InstallState.log("▶ $name")
+                    var inArc = 0L
                     val code = run(listOf("x", "-o+", "-p${j.password}", "-w${ctx.cacheDir.path}", "-dp${destDir.path}", j.path)) { line ->
                         val m = extracting.find(line)
                         if (m != null) {
                             val d = done.addAndGet(m.groupValues[2].toLong())
                             val pct = if (grand > 0) (d * 100 / grand).toInt().coerceIn(0, 99) else 0
+                            inArc += m.groupValues[2].toLong()
+                            InstallState.setArcPercent(i, if (sizes[i] > 0) (inArc * 100 / sizes[i]).toInt().coerceIn(0, 99) else 0)
                             InstallState.log(m.groupValues[1])
                             InstallState.update(percent = pct)
                         } else if (line.startsWith("ERROR") || line.contains("failed", true)) {
@@ -95,7 +99,7 @@ class Installer(private val ctx: Context) {
                     if (!cancelled && code != 0) {
                         failure.compareAndSet(null, "Помилка розпаковки $name (код $code). Дивіться журнал.")
                         cancel()
-                    } else if (!cancelled) InstallState.log("✔ $name")
+                    } else if (!cancelled) { InstallState.setArcPercent(i, 100); InstallState.log("✔ $name") }
                 }
             }
             futures.forEach { it.get() }
