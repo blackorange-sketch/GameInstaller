@@ -268,7 +268,7 @@ class Installer(private val ctx: Context) {
                                 InstallState.log("[$name] $line")
                             else if (!line.startsWith("Extracting") && line.isNotBlank() && !line.contains("mb/s")) { tail.addLast(line); if (tail.size > 10) tail.removeFirst() }
                             val m = extracting.find(line)
-                            if (m != null) InstallState.log(m.groupValues[1])
+                            if (m != null) { /* імена файлів не пишемо в журнал: їх тисячі, вони витісняють важливі рядки */ }
                             else if (line.startsWith("ERROR") || line.contains("failed", true)) InstallState.log(line)
                         }
                     }

@@ -45,6 +45,7 @@ class MainActivity : AppCompatActivity() {
     private val arcViews = mutableListOf<Pair<TextView, ProgressBar>>()
     private lateinit var logView: TextView
     private lateinit var logScroll: ScrollView
+    private var lastLog: String = ""
 
     private var scan: ScriptScan.Info? = null
     private var srcDir: File? = null
@@ -96,8 +97,14 @@ class MainActivity : AppCompatActivity() {
             arcViews[k].first.text = "${a.name}: ${a.percent}%"
             arcViews[k].second.progress = a.percent
         }
-        logView.text = s.log
-        logScroll.post { logScroll.fullScroll(View.FOCUS_DOWN) }
+        if (s.log != lastLog) {
+            lastLog = s.log
+            // автопрокрутка вниз лише якщо користувач і так біля кінця (інакше журнал "стрибає" під пальцем)
+            val child = logScroll.getChildAt(0)
+            val atBottom = child == null || logScroll.scrollY + logScroll.height >= child.height - (48 * resources.displayMetrics.density)
+            logView.text = s.log
+            if (atBottom) logScroll.post { logScroll.fullScroll(View.FOCUS_DOWN) }
+        }
         cancelBtn.visibility = if (s.running) View.VISIBLE else View.GONE
         if (s.finished) phase.text = "Готово! Файли гри в: ${currentDest()?.path}"
         if (s.error != null && !s.running) phase.text = "${s.phase}: ${s.error}"
