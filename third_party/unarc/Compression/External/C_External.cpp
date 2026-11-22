@@ -13,7 +13,7 @@ int external_program (bool IsCompressing, CALLBACK_FUNC *callback, void *auxdata
     BYTE* Buf = (BYTE*) malloc_msg(LARGE_BUFFER_SIZE);    // буфер, используемый для чтения/записи данных
     int x;                                            // код, возвращённый последней операцией чтения/записи
     int ExitCode = 0;                                 // код возврата внешней программы
-    bool useHeader = !strequ(method,"tempfile");      // TRUE, если в начало сжатого потока записывается 0/1 - данные несжаты/сжаты
+    bool useHeader = !strequ(method,"tempfile") && !strequ(method,"srep");  /* srep stream is native FreeArc format: no 0/1 header byte */      // TRUE, если в начало сжатого потока записывается 0/1 - данные несжаты/сжаты
 
     // Перепишем входные данные во временный файл
     infile.remove();
