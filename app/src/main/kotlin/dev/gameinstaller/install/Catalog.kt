@@ -42,6 +42,16 @@ object Catalog {
     private val ifaceRe = Regex("^lang(?:uage)?[-_ ]([a-z]+)$", RegexOption.IGNORE_CASE)
     private val voiceRe = Regex("^([a-z]+)audio$", RegexOption.IGNORE_CASE)
 
+    /** Файл озвучення мови в папці мови: RussianS.big = озвучення «russian» (ключ має збігатися з мовою інтерфейсу). */
+    private val speechRe = Regex("^([a-z]+)s\\.big$", RegexOption.IGNORE_CASE)
+
+    private fun speechKey(path: String, ifaceKeys: Collection<String>): String? {
+        val s = path.split('/')
+        if (s.size < 2 || s.dropLast(1).none { ifaceRe.matches(it) }) return null
+        val k = speechRe.matchEntire(s.last())?.groupValues?.get(1)?.lowercase() ?: return null
+        return if (k in ifaceKeys) k else null
+    }
+
     private fun segs(p: String) = p.split('/')
 
     /** Назва гри за відомими exe у корені. */
@@ -83,6 +93,7 @@ object Catalog {
                 ifaceRe.matchEntire(s[0])?.let { iface.add(it.groupValues[1].lowercase()) }
             }
         }
+        for (e in entries) speechKey(e.path, iface)?.let { voice.add(it) }
         return Plan(entries, games, iface.toList(), voice.toList())
     }
 
@@ -117,7 +128,10 @@ object Catalog {
                         if (p.ifaceLangs.size > 1 && c.iface != null && m.groupValues[1].lowercase() != c.iface) exc.add("$name/$sub")
                     }
                     voiceRe.matchEntire(sub)?.let { m ->
-                        if (p.voiceLangs.size > 1 && c.voice != null && m.groupValues[1].lowercase() != c.voice) exc.add("$name/$sub")
+                        // папку чужої мови прибираємо, лише якщо є папка озвучення вибраної мови
+                        if (p.voiceLangs.size > 1 && c.voice != null && m.groupValues[1].lowercase() != c.voice &&
+                            second.any { (r2, s2) -> r2 == low && voiceRe.matchEntire(s2)?.groupValues?.get(1)?.lowercase() == c.voice })
+                            exc.add("$name/$sub")
                     }
                 }
             } else {
@@ -130,6 +144,8 @@ object Catalog {
                 }
             }
         }
+        if (p.voiceLangs.size > 1 && c.voice != null)
+            for (e in p.entries) speechKey(e.path, p.ifaceLangs)?.let { if (it != c.voice) exc.add(e.path) }
         return Rules(inc.toList(), exc.toList())
     }
 
