@@ -29,6 +29,7 @@ import dev.gameinstaller.install.IsoFs
 import dev.gameinstaller.install.findInstallerExes
 import dev.gameinstaller.inno.ExternalCopier
 import dev.gameinstaller.install.InstallState
+import dev.gameinstaller.install.Catalog
 import java.io.File
 import kotlin.concurrent.thread
 
@@ -46,6 +47,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var logView: TextView
     private lateinit var logScroll: ScrollView
     private var lastLog: String = ""
+    private var choiceDialog: android.app.AlertDialog? = null
+    private var shownPlan: Catalog.Plan? = null
 
     private var scan: ScriptScan.Info? = null
     private var srcDir: File? = null
@@ -105,6 +108,9 @@ class MainActivity : AppCompatActivity() {
             logView.text = s.log
             if (atBottom) logScroll.post { logScroll.fullScroll(View.FOCUS_DOWN) }
         }
+        val pl = s.plan
+        if (pl == null) { shownPlan = null; choiceDialog?.dismiss(); choiceDialog = null }
+        else if (pl !== shownPlan) { shownPlan = pl; showChoice(pl) }
         cancelBtn.visibility = if (s.running) View.VISIBLE else View.GONE
         if (s.finished) phase.text = "Готово! Файли гри в: ${currentDest()?.path}"
         if (s.error != null && !s.running) phase.text = "${s.phase}: ${s.error}"
@@ -178,7 +184,71 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onStart() { super.onStart(); InstallState.addListener(listener) }
-    override fun onStop() { super.onStop(); InstallState.removeListener(listener) }
+    override fun onStop() {
+        super.onStop(); InstallState.removeListener(listener)
+        choiceDialog?.dismiss(); choiceDialog = null; shownPlan = null   // якщо вибір ще чекає, діалог покажеться знову в onStart
+    }
+
+    /** Вибір гри та мов (інтерфейс, озвучення) за вмістом архівів. */
+    private fun showChoice(plan: Catalog.Plan) {
+        val pad = (16 * resources.displayMetrics.density).toInt()
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(pad, pad, pad, 0) }
+        val def = Catalog.defaultChoice(plan)
+        val sel = plan.games.map { it.dir.lowercase() }.toMutableSet()
+        var iface = def.iface
+        var voice = def.voice
+        val arcCount = (plan.entries.maxOfOrNull { it.arc } ?: -1) + 1
+        val info = TextView(this).apply { setPadding(0, pad, 0, 0) }
+        var dlg: android.app.AlertDialog? = null
+        fun refreshInfo() {
+            val r = Catalog.rules(plan, Catalog.Choice(sel.toSet(), iface, voice))
+            info.text = "Буде розпаковано: " + PathUtil.human(Catalog.selectedSizes(plan, r, arcCount).sum())
+            dlg?.getButton(android.app.AlertDialog.BUTTON_POSITIVE)?.isEnabled = sel.isNotEmpty()
+        }
+        fun head(t: String) = box.addView(TextView(this).apply { text = t; textSize = 16f; setPadding(0, pad / 2, 0, 0) })
+        if (plan.games.size > 1) {
+            head("Гра")
+            plan.games.forEach { g ->
+                box.addView(android.widget.CheckBox(this).apply {
+                    text = g.title + " (" + PathUtil.human(g.size) + ", папка " + g.dir + ")"
+                    isChecked = true
+                    setOnCheckedChangeListener { _, on ->
+                        if (on) sel.add(g.dir.lowercase()) else sel.remove(g.dir.lowercase())
+                        refreshInfo()
+                    }
+                })
+            }
+        }
+        fun radios(title: String, keys: List<String>, cur: String?, onPick: (String) -> Unit) {
+            head(title)
+            val grp = android.widget.RadioGroup(this)
+            keys.forEach { k ->
+                grp.addView(android.widget.RadioButton(this).apply {
+                    id = View.generateViewId()
+                    text = Catalog.langTitle(k)
+                    isChecked = k == cur
+                    setOnClickListener { onPick(k); refreshInfo() }
+                })
+            }
+            box.addView(grp)
+        }
+        if (plan.ifaceLangs.size > 1) radios("Мова інтерфейсу", plan.ifaceLangs, iface) { iface = it }
+        if (plan.voiceLangs.size > 1) radios("Мова озвучення", plan.voiceLangs, voice) { voice = it }
+        box.addView(info)
+        box.addView(TextView(this).apply {
+            textSize = 12f; setPadding(0, pad / 2, 0, pad / 2)
+            text = "Файли інших мов і невибраної гри не розпаковуються. Поруч із грою буде створено set_language.reg для Winlator."
+        })
+        dlg = android.app.AlertDialog.Builder(this)
+            .setTitle("Що встановити")
+            .setView(ScrollView(this).apply { addView(box) })
+            .setCancelable(false)
+            .setPositiveButton("Продовжити") { _, _ -> InstallState.submitChoice(Catalog.Choice(sel.toSet(), iface, voice)) }
+            .setNegativeButton("Скасувати") { _, _ -> InstallService.cancel(this) }
+            .show()
+        choiceDialog = dlg
+        refreshInfo()
+    }
 
     private fun toast(t: String) = android.widget.Toast.makeText(this, t, android.widget.Toast.LENGTH_LONG).show()
 

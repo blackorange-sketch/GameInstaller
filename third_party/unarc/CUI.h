@@ -149,6 +149,15 @@ void CUI::ListFiles (DIRECTORY_BLOCK *dirblock, COMMAND &command)
 
     if (command.accept_file (dirblock, i)) { //   Если этот файл требуется обработать
       unsigned long long filesize = dirblock->size[i];
+      if (getenv("GI_MACHINE")) {   // GameInstaller: machine-readable listing
+        if (!dirblock->isdir[i]) {
+          static char mfn[MY_FILENAME_MAX*4];
+          dirblock->fullname (i, mfn);
+          printf ("@@F %llu %s\n", filesize, mfn);
+        }
+        total_files++;  total_bytes += filesize;  total_packed += packed;  packed = 0;
+        continue;
+      }
       char timestr[100];  FormatDateTime (timestr, 100, dirblock->time[i]);
 
       if (command.cmd=='l')

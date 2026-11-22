@@ -125,6 +125,51 @@ void RegisterExternalCompressors (char *progname)
 /******************************************************************************
 ** Разбор командной строки ****************************************************
 ******************************************************************************/
+// --- GameInstaller: include/exclude rules. Option -fl<file>; file lines: "+path" (include) / "-path" (exclude), prefixes of full names, case-insensitive ---
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+static char **gi_inc = NULL, **gi_exc = NULL;
+static int gi_ninc = 0, gi_nexc = 0;
+static void gi_norm (char *s) { for (; *s; s++) { if (*s=='\\') *s='/'; else if (*s>='A' && *s<='Z') *s += 32; } }
+static void gi_load_rules (const char *fn)
+{
+  FILE *f = fopen (fn, "r");
+  if (!f) return;
+  char line[4096];
+  while (fgets (line, sizeof line, f)) {
+    size_t n = strlen (line);
+    while (n && (line[n-1]=='\n' || line[n-1]=='\r')) line[--n] = 0;
+    if (n < 2) continue;
+    char kind = line[0];
+    char *p = strdup (line+1);
+    gi_norm (p);
+    size_t m = strlen (p);
+    while (m && p[m-1]=='/') p[--m] = 0;
+    if (kind=='+')      { gi_inc = (char**) realloc (gi_inc, (gi_ninc+1)*sizeof(char*)); gi_inc[gi_ninc++] = p; }
+    else if (kind=='-') { gi_exc = (char**) realloc (gi_exc, (gi_nexc+1)*sizeof(char*)); gi_exc[gi_nexc++] = p; }
+    else free (p);
+  }
+  fclose (f);
+}
+static bool gi_under (const char *path, const char *pre)
+{
+  size_t l = strlen (pre);
+  return strncmp (path, pre, l)==0 && (path[l]==0 || path[l]=='/');
+}
+static bool gi_rules_accept (const char *full, bool isdir)
+{
+  if (!gi_ninc && !gi_nexc) return true;
+  char *buf = strdup (full);
+  gi_norm (buf);
+  bool res = gi_ninc == 0;
+  for (int i=0; i<gi_nexc; i++) if (gi_under (buf, gi_exc[i])) { free (buf); return false; }
+  for (int i=0; i<gi_ninc && !res; i++)
+    if (gi_under (buf, gi_inc[i]) || (isdir && gi_under (gi_inc[i], buf))) res = true;
+  free (buf);
+  return res;
+}
+
 COMMAND::COMMAND (int argc, char *argv[])
 {
 #if defined(FREEARC_WIN) && !defined(FREEARC_LIBRARY)
@@ -257,6 +302,7 @@ COMMAND::COMMAND (int argc, char *argv[])
       else if (strequ(argv[0],"-o-"))      no       =TRUE;
       else if (start_with(argv[0],"-dp"))  outpath.setname(argv[0]+3);
       else if (start_with(argv[0],"-w"))   workdir.setname(argv[0]+2);
+      else if (start_with(argv[0],"-fl"))  gi_load_rules(argv[0]+3);
       else if (start_with(argv[0],"-p"))   set_encryption_password(argv[0]+2);
       else if (strequ(argv[0],"--"))       nooptions=TRUE;
       else ok=FALSE;
@@ -299,6 +345,13 @@ void COMMAND::Prepare()
 // TRUE, если i-й файл каталога dirblock следует включить в обработку
 BOOL COMMAND::accept_file (DIRECTORY_BLOCK *dirblock, int i)
 {
+  if (gi_ninc || gi_nexc) {
+    char *fn = (char*) malloc (MY_FILENAME_MAX*4);
+    dirblock->fullname (i, fn);
+    bool okr = gi_rules_accept (fn, dirblock->isdir[i]);
+    free (fn);
+    if (!okr) return FALSE;
+  }
   if (!*filenames)  return TRUE;            // В командной строке не указано ни одного имени файла - значит, нужно обрабатывать любой файл
   for (FILENAME *f=filenames; *f; f++) {
     if (strequ (dirblock->name[i], *f))

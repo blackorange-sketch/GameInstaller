@@ -57,10 +57,11 @@ class Installer(private val ctx: Context) {
     }
 
     /** @param idleSec якщо > 0 і unarc мовчить довше, процес зупиняється (повертає -2): так видно непідтримуваний метод стиснення. */
-    private fun run(args: List<String>, idleSec: Int = 0, onLine: (String) -> Unit): Int {
+    private fun run(args: List<String>, idleSec: Int = 0, env: Map<String, String> = emptyMap(), onLine: (String) -> Unit): Int {
         val pb = ProcessBuilder(listOf(unarcBin().path) + args).redirectErrorStream(true)
         pb.environment()["TMPDIR"] = (tmpDir ?: ctx.cacheDir).path
         arcIni()?.let { pb.environment()["GI_ARC_INI"] = it.path }
+        pb.environment().putAll(env)
         val p = pb.start()
         procs.add(p)
         // Вимірюємо, скільки процесорного часу з'їв unarc (/proc/<pid>/stat): видно, чи він впирається в одне ядро
@@ -198,13 +199,21 @@ class Installer(private val ctx: Context) {
                 jobs = jobs.map { ArchiveJob(it.path, if (it.password.isEmpty()) good!! else it.password) }
             }
 
-            // 1) підрахунок загального розміру
-            val sizes = LongArray(jobs.size)
+            // 1) список файлів кожного архіву (розмір і шляхи): за ним визначаємо ігри та мови
+            var sizes = LongArray(jobs.size)
+            val entries = ArrayList<ArcEntry>()
             for ((i, j) in jobs.withIndex()) {
                 if (cancelled) throw InterruptedException()
                 InstallState.update(phase = "Читаю список файлів (${i + 1}/${jobs.size})…")
                 var total = -1L
-                val code = run(listOf("v", "-p${j.password}", j.path)) { line ->
+                var listed = 0L
+                val code = run(listOf("v", "-p${j.password}", j.path), env = mapOf("GI_MACHINE" to "1")) { line ->
+                    if (line.startsWith("@@F ")) {
+                        val rest = line.removePrefix("@@F ")
+                        val sz = rest.substringBefore(' ').toLongOrNull() ?: 0L
+                        entries.add(ArcEntry(i, rest.substringAfter(' ').replace('\\', '/'), sz))
+                        listed += sz
+                    }
                     if (line.startsWith("@@M ")) {
                         val m = line.removePrefix("@@M ").substringBefore("+aes")
                         if (m.isNotEmpty() && !m.startsWith("storing")) InstallState.log("метод ${File(j.path).name}: $m")
@@ -215,12 +224,31 @@ class Installer(private val ctx: Context) {
                 require(code == 0 && total >= 0) { "Не вдалося прочитати ${File(j.path).name} (код $code). Перевірте файл і пароль." }
                 sizes[i] = total
             }
+
+            // вибір гри й мов (лише якщо в архівах є кілька ігор або мов)
+            val plan = Catalog.analyze(entries)
+            val choice = if (plan.needsChoice) InstallState.awaitChoice(plan) { cancelled } else Catalog.defaultChoice(plan)
+            InstallState.update(phase = "Підготовка…")
+            val rules = Catalog.rules(plan, choice)
+            val selSizes = Catalog.selectedSizes(plan, rules, jobs.size)
+            if (plan.games.isNotEmpty()) {
+                InstallState.log("Обрано: " + plan.games.filter { it.dir.lowercase() in choice.games }.joinToString { it.title } +
+                    "; інтерфейс: ${choice.iface ?: "—"}; озвучення: ${choice.voice ?: "—"}")
+            }
+            val rulesFile: File? = if (rules.isEmpty) null else File(ctx.cacheDir, "gi_rules.txt").also { it.writeText(rules.text()) }
+            // архіви без жодного потрібного файлу пропускаємо
+            val active = jobs.indices.filter { plan.games.isEmpty() || selSizes[it] > 0 }
+            if (active.size < jobs.size) InstallState.log("Пропущено архівів (немає потрібних файлів): " + jobs.indices.filter { it !in active }.joinToString { File(jobs[it].path).name })
+            require(active.isNotEmpty()) { "У вибраному немає файлів для розпаковки" }
+            val selTotal = if (plan.games.isEmpty()) sizes.sum() else active.sumOf { selSizes[it] }
+            jobs = active.map { jobs[it] }
+            sizes = LongArray(active.size) { sizes[active[it]] }
             val grand = sizes.sum()
             val free = StatFs(destDir.path).availableBytes
-            require(free > grand + (grand / 50)) {
-                "Мало місця: потрібно ${PathUtil.human(grand)}, вільно ${PathUtil.human(free)}"
+            require(free > selTotal + (selTotal / 50)) {
+                "Мало місця: потрібно ${PathUtil.human(selTotal)}, вільно ${PathUtil.human(free)}"
             }
-            InstallState.log("Усього розпакувати: ${PathUtil.human(grand)}")
+            InstallState.log("Розпакувати до ${PathUtil.human(selTotal)} (читати з архівів ${PathUtil.human(grand)})")
             // srep через тимчасові файли: потрібне місце ≈ розпакований розмір найбільшого архіву ×1,3
             val tmpNeed = (sizes.maxOrNull() ?: 0L) * 13 / 10
             val intFree = try { StatFs(ctx.cacheDir.path).availableBytes } catch (_: Exception) { 0L }
@@ -228,9 +256,9 @@ class Installer(private val ctx: Context) {
             val extFree = try { StatFs((destDir.parentFile ?: destDir).path).availableBytes } catch (_: Exception) { 0L }
             val newTmp = when {
                 intFree > tmpNeed -> File(ctx.cacheDir, "gi_tmp")
-                extFree > grand + tmpNeed -> extDir
+                extFree > selTotal + tmpNeed -> extDir
                 else -> throw IllegalStateException(
-                    "Мало місця для тимчасових файлів srep: потрібно ще ≈${PathUtil.human(tmpNeed)} (у пам'яті застосунку вільно ${PathUtil.human(intFree)}, у сховищі після гри ${PathUtil.human((extFree - grand).coerceAtLeast(0))})")
+                    "Мало місця для тимчасових файлів srep: потрібно ще ≈${PathUtil.human(tmpNeed)} (у пам'яті застосунку вільно ${PathUtil.human(intFree)}, у сховищі після гри ${PathUtil.human((extFree - selTotal).coerceAtLeast(0))})")
             }
             newTmp.mkdirs()
             tmpDir?.takeIf { it != newTmp }?.deleteRecursively()
@@ -253,7 +281,8 @@ class Installer(private val ctx: Context) {
                     val t0 = System.currentTimeMillis()
                     var last = 0L
                     val tail = java.util.ArrayDeque<String>()
-                    val code = run(listOf("x", "-o+", "-p${j.password}", "-w${(tmpDir ?: ctx.cacheDir).path}", "-dp${destDir.path}", j.path), idleSec = 420) { line ->
+                    val code = run(listOf("x", "-o+", "-p${j.password}", "-w${(tmpDir ?: ctx.cacheDir).path}", "-dp${destDir.path}") +
+                        listOfNotNull(rulesFile?.let { "-fl${it.path}" }) + j.path, idleSec = 420) { line ->
                         val pm = written.find(line)
                         if (pm != null) {
                             val w = pm.groupValues[1].toLong().coerceAtMost(sizes[i])
@@ -290,6 +319,12 @@ class Installer(private val ctx: Context) {
             if (cancelled) throw InterruptedException()
             InstallState.update(phase = "Складаю файли гри…")
             try { Overlay.merge(destDir) { InstallState.log(it) } } catch (e: Exception) { InstallState.log("ПОПЕРЕДЖЕННЯ: складання накладок: ${e.message}") }
+            try {
+                Catalog.regText(plan, choice)?.let {
+                    File(destDir, "set_language.reg").writeText(it)
+                    InstallState.log("Файл мови для Winlator: ${File(destDir, "set_language.reg").path} (імпортуйте через regedit)")
+                }
+            } catch (e: Exception) { InstallState.log("ПОПЕРЕДЖЕННЯ: set_language.reg: ${e.message}") }
             InstallState.update(running = false, phase = "Готово", percent = 100, finished = true)
         } catch (e: InterruptedException) {
             InstallState.update(running = false, phase = "Скасовано", error = "Скасовано користувачем")

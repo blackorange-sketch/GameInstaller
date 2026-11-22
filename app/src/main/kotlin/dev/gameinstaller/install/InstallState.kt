@@ -14,6 +14,7 @@ object InstallState {
         val finished: Boolean = false,
         val error: String? = null,
         val archives: List<Arc> = emptyList(),
+        val plan: Catalog.Plan? = null,
     )
 
     data class Arc(val name: String, val percent: Int = 0)
@@ -39,9 +40,9 @@ object InstallState {
     fun update(
         running: Boolean = snap.running, phase: String = snap.phase, percent: Int = snap.percent,
         finished: Boolean = snap.finished, error: String? = snap.error,
-        archives: List<Arc> = snap.archives,
+        archives: List<Arc> = snap.archives, plan: Catalog.Plan? = snap.plan,
     ) {
-        snap = Snapshot(running, phase, percent, logLines.joinToString("\n"), finished, error, archives)
+        snap = Snapshot(running, phase, percent, logLines.joinToString("\n"), finished, error, archives, plan)
         val s = snap
         main.post { listeners.forEach { it(s) } }
     }
@@ -56,6 +57,27 @@ object InstallState {
         update(archives = cur.mapIndexed { k, a -> if (k == i) a.copy(percent = pct) else a })
     }
 
+    @Volatile private var choiceFuture: java.util.concurrent.CompletableFuture<Catalog.Choice>? = null
+
+    /** Показує користувачу вибір гри й мов і чекає відповіді (викликається з потоку встановлення). */
+    fun awaitChoice(plan: Catalog.Plan, cancelled: () -> Boolean): Catalog.Choice {
+        val f = java.util.concurrent.CompletableFuture<Catalog.Choice>()
+        choiceFuture = f
+        update(phase = "Оберіть гру й мови…", plan = plan)
+        try {
+            while (true) {
+                if (cancelled()) throw InterruptedException()
+                try { return f.get(300, java.util.concurrent.TimeUnit.MILLISECONDS) }
+                catch (_: java.util.concurrent.TimeoutException) { }
+            }
+        } finally {
+            choiceFuture = null
+            update(plan = null)
+        }
+    }
+
+    fun submitChoice(c: Catalog.Choice) { choiceFuture?.complete(c) }
+
     @Synchronized
-    fun reset() { logLines.clear(); snap = Snapshot() }
+    fun reset() { logLines.clear(); choiceFuture = null; snap = Snapshot() }
 }
