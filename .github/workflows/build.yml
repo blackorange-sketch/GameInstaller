@@ -23,7 +23,7 @@ jobs:
           TC="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
           cd third_party/unarc
           make -f Makefile.android CXX="$TC/aarch64-linux-android26-clang++" \
-               UNIX_LINK_FLAGS="-static-libstdc++ -s" -j4
+               UNIX_LINK_FLAGS="-static-libstdc++ -rdynamic -ldl" -j4
           file unarc
           mkdir -p ../../app/src/main/jniLibs/arm64-v8a
           cp unarc ../../app/src/main/jniLibs/arm64-v8a/libunarc.so
