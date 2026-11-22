@@ -153,8 +153,18 @@ class MainActivity : AppCompatActivity() {
         phase = TextView(this)
         root.addView(phase)
         logView = TextView(this).apply { textSize = 11f; typeface = android.graphics.Typeface.MONOSPACE }
-        logScroll = ScrollView(this).apply { addView(logView) }
-        root.addView(logScroll, LinearLayout.LayoutParams(-1, (240 * resources.displayMetrics.density).toInt()))
+        logView.setTextIsSelectable(true)
+        logScroll = ScrollView(this).apply {
+            addView(logView)
+            // журнал лежить у зовнішньому ScrollView: без цього він не прокручується пальцем
+            setOnTouchListener { v, _ -> v.parent.requestDisallowInterceptTouchEvent(true); false }
+        }
+        root.addView(logScroll, LinearLayout.LayoutParams(-1, (360 * resources.displayMetrics.density).toInt()))
+        root.addView(button("Копіювати весь журнал") {
+            val cm = getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager
+            cm.setPrimaryClip(android.content.ClipData.newPlainText("GameInstaller log", logView.text))
+            android.widget.Toast.makeText(this, "Журнал скопійовано", android.widget.Toast.LENGTH_SHORT).show()
+        })
 
         setContentView(ScrollView(this).apply { addView(root) })
         if (Build.VERSION.SDK_INT >= 33) notifPerm.launch(Manifest.permission.POST_NOTIFICATIONS)

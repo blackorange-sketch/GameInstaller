@@ -32,7 +32,7 @@ object InstallState {
     @Synchronized
     fun log(line: String) {
         logLines.addLast(line)
-        while (logLines.size > 150) logLines.removeFirst()
+        while (logLines.size > 2000) logLines.removeFirst()
     }
 
     @Synchronized
