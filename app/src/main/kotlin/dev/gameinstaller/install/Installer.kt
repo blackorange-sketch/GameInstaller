@@ -288,6 +288,8 @@ class Installer(private val ctx: Context) {
             pool.shutdown()
             failure.get()?.let { throw IllegalStateException(it) }
             if (cancelled) throw InterruptedException()
+            InstallState.update(phase = "Складаю файли гри…")
+            try { Overlay.merge(destDir) { InstallState.log(it) } } catch (e: Exception) { InstallState.log("ПОПЕРЕДЖЕННЯ: складання накладок: ${e.message}") }
             InstallState.update(running = false, phase = "Готово", percent = 100, finished = true)
         } catch (e: InterruptedException) {
             InstallState.update(running = false, phase = "Скасовано", error = "Скасовано користувачем")
